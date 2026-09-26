@@ -1,8 +1,9 @@
-# FlameNet fixed-version hybrid model training config - RainSynAll100Haze dataset 128-channel version (64A+32 dual-point enhancement)
-# fixed: FlameNet fixed-version model + simplified pa_frames=2 optical flow + random adaptive flow_mask
+# FlameNet hybrid model training config - RainSynAll100Haze dataset, 256-channel / 160-patch version (64A+32 dual-point enhancement)
+# optical flow: simplified single-interval pa_frames=2 + random adaptive flow_mask
 # 64a32: 64A+32 dual-point enhancement strategy (trsa64a=True, trsa32=True, trsa64b=False)
-# f128v48: Mamba feature dimension 128, VRT processing dimension 48
+# f256v48: Mamba feature dimension 256, VRT processing dimension 48
 # g8dp2: deformable_groups=8, depth=2 (two-layer TRSA processing)
+# p160: 160×160 patch size
 # RainSynAll100Haze: train on the RainSynAll100_Haze dataset
 # lr1e-4: learning rate 1e-4
 # 300k: 300K training iterations (referencing the proven VRDS config)
@@ -209,12 +210,12 @@ train_cfg = dict(type='IterBasedTrainLoop', max_iters=iters, val_interval=interv
 val_cfg = dict(type='MultiValLoop')
 test_cfg = dict(type='MultiTestLoop')
 
-# optimizer - FlameNet 128-channel dedicated config (fixed version: fine-grained parameter grouping strategy)
+# optimizer - FlameNet 256-channel config (fine-grained parameter grouping strategy)
 optim_wrapper = dict(
     constructor='DefaultOptimWrapperConstructor',
     type='OptimWrapper',  # 🔧 use a standard optimizer wrapper, stable and reliable
     optimizer=dict(type='AdamW', lr=1e-4, betas=(0.9, 0.999), weight_decay=0.0001),
-    # 🔥 128-channel version: dedicated parameter-grouping optimization strategy for FlameNet
+    # 🔥 256-channel version: dedicated parameter-grouping optimization strategy for FlameNet
     paramwise_cfg=dict(
         custom_keys={
             'spynet': dict(lr_mult=0.25),        # SpyNet uses 1/4 learning rate (following the standard config)
@@ -228,9 +229,9 @@ optim_wrapper = dict(
 # model compilation to speed up training
 cfg = dict(compile='compile_options')
 
-# learning policy - FlameNet 128-channel learning rate schedule (300K total training: 50K warm-up + 150K stable + 100K decay)
+# learning policy - FlameNet 256-channel learning rate schedule (300K total training: 50K warm-up + 150K stable + 100K decay)
 param_scheduler = [
-    # 🔧 FlameNet 128-channel warmup: 50k warm-up period to stabilize the complex optical-flow fusion
+    # 🔧 FlameNet 256-channel warmup: 50k warm-up period to stabilize the complex optical-flow fusion
     dict(
         type='LinearLR',
         start_factor=0.001,
@@ -238,7 +239,7 @@ param_scheduler = [
         begin=0,
         end=50000,  # 50k warmup, letting FlowGuidedFusion activate gradually
     ),
-    # 🔧 FlameNet 128-channel main training: cosine annealing (starts at 200k, corresponding to 300k total training)
+    # 🔧 FlameNet 256-channel main training: cosine annealing (starts at 200k, corresponding to 300k total training)
     dict(
         type='CosineRestartLR',
         periods=[(iters-200000)],  # remaining 100k iterations (300k-200k=100k)
@@ -323,27 +324,26 @@ model_wrapper_cfg = dict(
     find_unused_parameters=True,  # set to True to avoid FLAME parameter issues
 )
 
-# FlameNet 128-channel RainSynAll100Haze dataset version configuration notes
+# FlameNet 256-channel / 160-patch RainSynAll100Haze dataset configuration notes
 """
-🎯 FlameNet 128-channel version (optical flow fix + adaptive mask version) - RainSynAll100Haze dataset configuration notes (128 patch + dynamic Hilbert pipeline)
+🎯 FlameNet 256-channel / p160 version (optical-flow fix + adaptive mask) - RainSynAll100Haze dataset configuration notes (160 patch + dynamic Hilbert pipeline)
 
 📊 Naming convention:
-- fixed: FlameNet fixed-version model + simplified pa_frames=2 optical flow + random adaptive flow_mask
 - f: frequency enhancement (fre_decoder=True)
 - 64a32: 64A+32 dual-point enhancement strategy (trsa64a=True, trsa32=True, trsa64b=False)
-- f128v48: Mamba feature dimension 128, VRT processing dimension 48
+- f256v48: Mamba feature dimension 256, VRT processing dimension 48
 - g8dp2: deformable_groups=8, depth=2 (two-layer TRSA processing depth)
-- p128: 128×128 patch size (supports small images)
+- p160: 160×160 inference patch size
 - RainSynAll100Haze: train on the RainSynAll100_Haze dataset
 - lr1e-4: learning rate 1e-4
 - 300k: 300K training iterations (referencing the proven VRDS config)
 
-🔧 Key technical modifications (128 patch adaptation):
-1. **Model architecture**: Flame → FlameDynamic (supports the dynamic Hilbert pipeline)
-2. **Network type**: FlameNet → FlameNet128 (dedicated version for 128 patch)
-3. **Training patch**: original 256×256 → 128×128 (adapting to the dataset's minimum image size of 215×352)
-4. **Inference patch**: original 256×256 → 128×128, overlap: 192×192 → 96×96
-5. **VRT config**: img_size [6,64,64] → [6,32,32] (corresponding feature map size)
+🔧 Model configuration:
+1. **Wrapper**: FlameDynamic (dynamic Hilbert pipeline, supports arbitrary patch size)
+2. **Network type**: FlameNet160 (dedicated version for 160 patch, 256 channels)
+3. **Training patch**: 160×160, i.e. img_size=[6,40,40] (160/4) feature maps
+4. **Inference patch**: tile=[6,160,160], tile_overlap=[5,120,120]
+5. **VRT config**: vrt_dim=48, deformable_groups=8, trsa64a/trsa32 enabled, pa_frames=2
 
 📁 RainSynAll100Haze dataset structure:
 - Training set:
@@ -359,20 +359,20 @@ model_wrapper_cfg = dict(
 - Frame sequences are numbered from 1, suitable for pursuing SOTA metrics
 - GT is shared with RainSynAll100; IMG is the Rain_Haze version
 
-💡 Core advantages of 128 channels:
+💡 Core advantages of 256 channels:
 1. 🎯 Referencing the proven VRDS config: uses a validated, stable parameter combination
-2. 🔧 Numerical stability: 128 channels deliver better stability across multiple datasets
-3. ⚡ 256 patch retained: uses a 256×256 patch size to preserve detail restoration capability
+2. 🔧 Numerical stability: 256 channels deliver better stability across multiple datasets
+3. ⚡ 160×160 patch: preserves detail restoration capability while fitting the dataset's image sizes
 4. 🛡️ Stable dual-point fusion: 64A+32 co-processing runs more smoothly
 5. 📈 Visualization fix: an EMA hook is added to improve image outputs
 
 🎯 Current configuration characteristics:
 - Dataset: RainSynAll100_Haze, a rain-haze mixture degradation video dataset
 - File format: JPG files with numeric names starting from 1 ({:d}.jpg)
-- patch size: 256×256 config, corresponding to a 64×64 feature map
-- Inference config: tile=[6,256,256], tile_overlap=[5,192,192]
-- Validation interval: 200 (experimental config)
-- Training iterations: 300K (50K warm-up + 200K stable + 100K decay)
+- Patch size: 160×160, corresponding to a 40×40 feature map
+- Inference config: tile=[6,160,160], tile_overlap=[5,120,120]
+- Validation interval: 10000
+- Training iterations: 300K (50K warm-up + 150K stable + 100K decay)
 - Dual-point enhancement: trsa64a=True, trsa32=True, trsa64b=False
 - Parameter optimization: the VRT module uses a larger learning rate (1.5x-2x)
 - Single-dataset training: focused on RainSynAll100_Haze performance optimization
@@ -394,5 +394,5 @@ model_wrapper_cfg = dict(
 🚀 Training command:
 python tools/train.py configs/flame/flame_rainsynall100haze.py
 
-Expected: the 128-channel + 128-patch version achieves stable training results on RainSynAll100_Haze; rain-haze mixture degradation is highly challenging
+Expected: the 256-channel / 160-patch version achieves stable training results on RainSynAll100_Haze; rain-haze mixture degradation is highly challenging
 """ 

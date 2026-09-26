@@ -89,7 +89,7 @@ mkdir checkpoints
 
 ### 2. Prepare the dataset
 
-Download **RainSynAll100** from the source released by its authors (RMFD, TPAMI 2022) and organize it as:
+Download **RainSynAll100** and organize it as:
 
 ```
 data/RainSynAll100/
@@ -98,7 +98,12 @@ data/RainSynAll100/
     └── Rain_Haze/   # degraded input with the same folder/file layout
 ```
 
-Other benchmarks used in the paper: **VRDS** (VIMPNet, ACM MM 2023), **LWDDS** (VWR, arXiv:2302.05916), and **W3** (introduced by [AIM-VR, ICME 2025](https://doi.org/10.1109/ICME59968.2025.11209023)) — please obtain them from the respective original papers. See `configs/flame/` for the expected directory layout of each.
+See `configs/flame/` for the expected directory layout of each benchmark. The datasets and benchmarks used in this work come from the following papers — please obtain them from the original releases:
+
+- **RainSynAll100** — W. Yang, R. T. Tan, J. Feng, S. Wang, B. Cheng, and J. Liu, "Recurrent Multi-Frame Deraining: Combining Physics Guidance and Adversarial Learning," *IEEE TPAMI*, vol. 44, no. 11, pp. 8569–8586, 2022.
+- **VRDS** — H. Wu, Y. Yang, H. Chen, J. Ren, and L. Zhu, "Mask-Guided Progressive Network for Joint Raindrop and Rain Streak Removal in Videos," *ACM MM*, 2023, pp. 7216–7225.
+- **LWDDS** — Q. Wen, Y. Wu, and Q. Chen, "Video Waterdrop Removal via Spatio-Temporal Fusion in Driving Scenes," *arXiv:2302.05916*, 2023.
+- **W3** — Z. Lu, T. Liu, J. Huang, Z. Chen, X. Li, B. Xiao, and W. Zhao, "AIM-VR: All-in-One Video Restoration via Dual-Path Mamba with Frequency Adaptive Fusion," *IEEE ICME*, 2025 (the W3 benchmark is introduced in this paper).
 
 ### 3. Run inference / evaluation
 
@@ -149,10 +154,10 @@ mmagic/models/editors/
 ```
 
 The registered class names are `Flame`/`FlameDynamic` (wrappers) and
-`FlameNet`/`FlameNet128`/`FlameNet160` (generators). The development-era names
-(`AimVRT`, `AimVRTDynamic`, `DMVRTNetFixed`, `DMVRTNetFixed128`,
-`DMVRTNetFixed160`) stay registered and importable as legacy aliases, so old
-configs and checkpoints remain buildable.
+`FlameNet`/`FlameNet128`/`FlameNet160` (generators). For backward compatibility
+with checkpoints produced during development, the pre-release aliases remain
+registered in `mmagic/models/editors/flame/__init__.py`, so older checkpoints
+and configs stay buildable.
 
 Training/testing configs:
 

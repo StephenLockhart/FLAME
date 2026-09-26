@@ -3,9 +3,8 @@
 # Test config for the released 256-channel / 160-patch FLAME model
 # (FlameDynamic + FlameNet160). Model parameters follow the main
 # training config flame_rainsynall100haze.py
-# and the mmengine backup config recorded in the training work_dir
-# (work_dirs/...RainSynAll100Haze_20250922/20250924_104310/vis_data/config.py),
-# which is also the setup that produced the reported validation PSNR/SSIM.
+# and the reference configuration saved in the training work directory, which is
+# also the setup that produced the reported validation PSNR/SSIM.
 #
 # Frame setup: each RainSynAll100Haze test video contains 7 frames, while the
 # model is trained on 6-frame clips (img_size=[6, 40, 40]). The 7 input
