@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "FLAME: Flow Guidance and Adaptive Frequency Fusion for All-in-One Mamba-Enhanced Video Restoration"
+authors:
+  - family-names: Lu
+    given-names: Zhizhou
+  - family-names: Liu
+    given-names: Tianrui
+  - family-names: Huang
+    given-names: Jun-Jie
+  - family-names: Zhao
+    given-names: Wentao
+  - family-names: Liu
+    given-names: Xinwang
+  - family-names: Luo
+    given-names: Wenhan
+  - family-names: Wang
+    given-names: Meng
+type: software
+url: "https://github.com/StephenLockhart/FLAME"
+license: Apache-2.0
