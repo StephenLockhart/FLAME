@@ -70,9 +70,9 @@ pip install -e .
 
 | File | Size | Description |
 |---|---|---|
-| `flame_rainsynall100haze_psnr.pth` | 308 MB | Main model, EMA weights (RainSynAll100 rain-haze, measured 29.52 dB PSNR / 0.9614 SSIM), `DMVRTNetFixed160` |
+| `flame_rainsynall100haze_psnr.pth` | 308 MB | Main model, EMA weights (RainSynAll100 rain-haze, measured 29.52 dB PSNR / 0.9614 SSIM), `FlameNet160` |
 | `flame_rainsynall100haze_ssim.pth` | 308 MB | SSIM-oriented checkpoint of the same model |
-| `flame_rainsynall100.pth` | 170 MB | RainSynAll100 (rain only), `DMVRTNetFixed128` |
+| `flame_rainsynall100.pth` | 170 MB | RainSynAll100 (rain only), `FlameNet128` |
 
 Weights are distributed in a compact inference-only format (EMA generator weights, optimizer states removed, ready to be loaded by the MMagic wrapper).
 
@@ -98,21 +98,21 @@ data/RainSynAll100/
     └── Rain_Haze/   # degraded input with the same folder/file layout
 ```
 
-Other benchmarks used in the paper: **VRDS** (VIMPNet, ACM MM 2023), **LWDDS** (VWR, arXiv:2302.05916), and **W3** (introduced by [AIM-VR, ICME 2025](https://doi.org/10.1109/ICME59968.2025.11209023)) — please obtain them from the respective original papers. See `configs/aimvrtRain/` for the expected directory layout of each.
+Other benchmarks used in the paper: **VRDS** (VIMPNet, ACM MM 2023), **LWDDS** (VWR, arXiv:2302.05916), and **W3** (introduced by [AIM-VR, ICME 2025](https://doi.org/10.1109/ICME59968.2025.11209023)) — please obtain them from the respective original papers. See `configs/flame/` for the expected directory layout of each.
 
 ### 3. Run inference / evaluation
 
 Each checkpoint pairs with the matching test config:
 
 ```bash
-# RainSynAll100 rain-haze (main result, DMVRTNetFixed160)
+# RainSynAll100 rain-haze (main result, FlameNet160)
 python tools/test.py \
-    configs/aimvrtRain/test/dmvrt-fixed-64a32_f256_RainSynAll100Haze_Test.py \
+    configs/flame/test/flame_rainsynall100haze_test.py \
     checkpoints/flame_rainsynall100haze_psnr.pth
 
-# RainSynAll100 rain only (DMVRTNetFixed128)
+# RainSynAll100 rain only (FlameNet128)
 python tools/test.py \
-    configs/aimvrtRain/test/dmvrt-fixed-64a32_f128_RainSynAll100_FullTest_20250919.py \
+    configs/flame/test/flame_rainsynall100_test.py \
     checkpoints/flame_rainsynall100.pth
 ```
 
@@ -125,7 +125,7 @@ Restored frames and PSNR/SSIM metrics will be saved under `./work_dirs/test/`. B
 
 ```bash
 python tools/train.py \
-    configs/aimvrtRain/dmvrt-fixed-64a32_f256v48g8dp2-p160_lr1e-4_RainSynAll100Haze_20250924.py
+    configs/flame/flame_rainsynall100haze.py
 ```
 
 The training config uses Charbonnier loss + VGG16 perceptual loss, AdamW (lr 1e-4) with linear warm-up and cosine restarts, EMA weights, and 300K iterations. Set `data_root` in the config first. WandB logging is available but disabled by default (see the commented `WandbVisBackend` block).
@@ -136,19 +136,33 @@ FLAME is implemented on top of the [MMagic](https://github.com/open-mmlab/mmagic
 
 ```
 mmagic/models/editors/
-├── aimvrt/                     # FLAME model (registered names kept as-is)
-│   ├── dmvrt_net_fixed.py      # FLAME main network: DPMM + FLA + AFR
-│   ├── dmvrt_net_fixed_128.py  # 128-channel / 128-patch variant
-│   ├── dmvrt_net_fixed_160.py  # 160-patch variant (main paper model)
-│   ├── aimvrt.py               # MMagic wrapper (training/inference pipeline)
-│   ├── aimvrt_dynamic.py       # Dynamic Hilbert pipeline wrapper
-│   └── VRT-main/models/network_vrt.py  # VRT building blocks (SpyNet, DCNv2, TRSA)
-└── aimvsr/                     # AIM-VR components reused by FLAME
-    ├── aimvr_net.py            # AIM-VR feature extractor (DPMM + frequency modules)
-    └── modules/                # ConvNeXt encoder, Mamba blocks, Hilbert3d, etc.
+├── flame/                     # FLAME model
+│   ├── flame_net.py           # FlameNet: FLAME main network, DPMM + FLA + AFR
+│   ├── flame_net_128.py       # FlameNet128: 128-channel / 128-patch variant
+│   ├── flame_net_160.py       # FlameNet160: 160-patch variant (main paper model)
+│   ├── flame.py               # Flame wrapper (BaseEditModel, training/inference pipeline)
+│   ├── flame_dynamic.py       # FlameDynamic wrapper (dynamic Hilbert pipeline)
+│   └── VRT-main/models/network_vrt.py  # VRT building blocks (SpyNet, DCNv2, TRSA; CC BY-NC)
+└── aimvsr/                    # AIM-VR backbone components (ICME 2025, reused by FLAME)
+    ├── aimvr_net.py           # AIM-VR feature extractor (DPMM + frequency modules)
+    └── modules/               # ConvNeXt encoder, Mamba blocks, Hilbert3d, etc.
 ```
 
-Training/testing configs: `configs/aimvrtRain/`.
+The registered class names are `Flame`/`FlameDynamic` (wrappers) and
+`FlameNet`/`FlameNet128`/`FlameNet160` (generators). The development-era names
+(`AimVRT`, `AimVRTDynamic`, `DMVRTNetFixed`, `DMVRTNetFixed128`,
+`DMVRTNetFixed160`) stay registered and importable as legacy aliases, so old
+configs and checkpoints remain buildable.
+
+Training/testing configs:
+
+```
+configs/flame/
+├── flame_rainsynall100haze.py              # RainSynAll100Haze training config
+└── test/
+    ├── flame_rainsynall100haze_test.py     # RainSynAll100Haze test config
+    └── flame_rainsynall100_test.py         # RainSynAll100 test config
+```
 
 ## 🎓 Citation
 
@@ -179,5 +193,5 @@ This project is built upon [MMagic](https://github.com/open-mmlab/mmagic). The f
 ## 📄 License
 
 - The FLAME code and the MMagic-based portions of this repository are released under the [Apache License 2.0](LICENSE).
-- **Exception:** `mmagic/models/editors/aimvrt/VRT-main/` is adapted from VRT and is licensed under **CC BY-NC 4.0 (non-commercial research use only)** — see its `LICENSE` file and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES) for details.
+- **Exception:** `mmagic/models/editors/flame/VRT-main/` is adapted from VRT and is licensed under **CC BY-NC 4.0 (non-commercial research use only)** — see its `LICENSE` file and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES) for details.
 - The pretrained FLAME/SpyNet checkpoints are released for **non-commercial academic research** use.

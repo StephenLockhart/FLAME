@@ -10,7 +10,7 @@ Training checkpoints produced by MMEngine may contain:
 This script keeps only the generator weights (EMA preferred when present).
 Only the extra DDP ``module.`` layer introduced by DistributedDataParallel is
 stripped; every output key keeps the ``generator.`` prefix so that the saved
-``state_dict`` matches the ``AimVRT``/``AimVRTDynamic`` wrapper built by
+``state_dict`` matches the ``Flame``/``FlameDynamic`` wrapper built by
 ``tools/test.py`` (a ``BaseEditModel`` whose network lives at
 ``model.generator``, i.e. keys ``generator.fre2.para1`` etc.). A compact
 checkpoint is written that ``tools/test.py`` can consume directly.
@@ -35,7 +35,7 @@ def convert(in_path: str, out_path: str, prefer_ema: bool = True) -> None:
         # Some checkpoints wrap the EMA model in DDP as well, giving keys
         # such as ``generator_ema.module.xxx``; strip the extra ``module.``
         # layer but always keep the wrapper-level ``generator.`` prefix so
-        # the state_dict matches AimVRT/AimVRTDynamic (model.generator).
+        # the state_dict matches Flame/FlameDynamic (model.generator).
         out = {}
         for k, v in state_dict.items():
             if k.startswith(prefix):

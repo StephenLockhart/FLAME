@@ -35,8 +35,8 @@ def load_vrt_modules():
 Stage, SpyNet, DCNv2PackFlowGuided, Mlp_GEGLU = load_vrt_modules()
 
 
-class DMVRTFlowFusion160(nn.Module):
-    """160-patch-specific VRT optical flow fusion module - fully reuses logic from dmvrt_net_fixed, adjusts feature map size to 40x40"""
+class FlowGuidedFusion160(nn.Module):
+    """160-patch-specific VRT optical flow fusion module - fully reuses logic from flame_net, adjusts feature map size to 40x40"""
 
     def __init__(self, mamba_dim, vrt_dim=96, pa_frames=6, deformable_groups=16,
                  trsa_depth=2, trsa_heads=6, window_size=[6, 8, 8]):
@@ -49,7 +49,7 @@ class DMVRTFlowFusion160(nn.Module):
         self.feat_to_vrt = nn.Conv3d(mamba_dim, vrt_dim, 1)
 
         # Step 2: Smart VRT Stage - 160-patch version, feature map size adjusted to 40x40
-        print(f"DMVRTFlowFusion160: mamba_dim={mamba_dim}, vrt_dim={vrt_dim}, "
+        print(f"FlowGuidedFusion160: mamba_dim={mamba_dim}, vrt_dim={vrt_dim}, "
               f"input_resolution=(dynamic,40,40), pa_frames={pa_frames}")
 
         # No-flow VRT Stage (pa_frames=0) - 160-patch: 40x40 feature map
@@ -113,7 +113,7 @@ class DMVRTFlowFusion160(nn.Module):
                     block.input_resolution = new_resolution
 
     def forward(self, mamba_features, flows_backward=None, flows_forward=None):
-        """160-patch-specific forward pass - fully reuses logic from dmvrt_net_fixed"""
+        """160-patch-specific forward pass - fully reuses logic from flame_net"""
         try:
             # Step 1: Reduce Mamba feature dimensions to VRT dimension
             mamba_3d = rearrange(mamba_features, 'b t c h w -> b c t h w')
@@ -135,7 +135,7 @@ class DMVRTFlowFusion160(nn.Module):
                     flows_backward_1 = flows_backward  # [B, T-1, 2, H, W]
                     flows_forward_1 = flows_forward
 
-                    # Fix: uniformly use 3 optical flows, consistent with original dmvrt_net.py
+                    # Fix: uniformly use 3 optical flows, consistent with original flame_net.py
                     flows_backward_2 = self._generate_2frame_flows(flows_backward_1, flows_forward_1, backward=True)
                     flows_forward_2 = self._generate_2frame_flows(flows_backward_1, flows_forward_1, backward=False)
                     flows_backward_3 = self._generate_3frame_flows(flows_backward_1, flows_forward_1, flows_backward_2, flows_forward_2, backward=True)
@@ -168,7 +168,7 @@ class DMVRTFlowFusion160(nn.Module):
             return vrt_features
 
         except Exception as e:
-            print(f"DMVRTFlowFusion160 processing failed: {e}, returning dimension-reduced Mamba features")
+            print(f"FlowGuidedFusion160 processing failed: {e}, returning dimension-reduced Mamba features")
             # On complete failure, return dimension-reduced Mamba features
             mamba_3d = rearrange(mamba_features, 'b t c h w -> b c t h w')
             # Fix: correctly handle feature dimension reduction
@@ -335,15 +335,15 @@ class DMVRTFlowFusion160(nn.Module):
         return flow_mask
 
 
-# Reuse DMVRTAdvancedFusion from the original version
-from .dmvrt_net_fixed import DMVRTAdvancedFusion
+# Reuse AdaptiveFusion from flame_net
+from .flame_net import AdaptiveFusion
 
 
-@MODELS.register_module()
-class DMVRTNetFixed160(BaseModule):
-    """160-patch-specific version of DMVRTNetFixed
+@MODELS.register_module(name=['FlameNet160', 'DMVRTNetFixed160'])
+class FlameNet160(BaseModule):
+    """160-patch-specific version of FlameNet
 
-    Specifically optimized for 160x160 patch training, fully reuses logic from dmvrt_net_fixed.py:
+    Specifically optimized for 160x160 patch training, fully reuses logic from flame_net.py:
     - Main difference: feature map sizes in optical flow computation (40x40 vs original 64x64, 20x20 vs original 32x32)
     - All other logic is identical to ensure stability
     """
@@ -409,9 +409,9 @@ class DMVRTNetFixed160(BaseModule):
                 self.pa_frames = 0
             self.spynet = None
 
-        # 3. DMVRTFlowFusion160 module (64A position: after M1)
+        # 3. FlowGuidedFusion160 module (64A position: after M1)
         if self.trsa64a:
-            self.dmvrt_fusion_64a = DMVRTFlowFusion160(
+            self.dmvrt_fusion_64a = FlowGuidedFusion160(
                 mamba_dim=num_features,  # 256
                 vrt_dim=vrt_dim,         # 96
                 pa_frames=self.pa_frames,
@@ -420,7 +420,7 @@ class DMVRTNetFixed160(BaseModule):
                 trsa_heads=trsa64_heads, # 6
                 window_size=window_size
             )
-            self.advanced_fusion_64a = DMVRTAdvancedFusion(
+            self.advanced_fusion_64a = AdaptiveFusion(
                 mamba_dim=num_features,  # 256
                 vrt_dim=vrt_dim,         # 96
                 use_flow_mask=use_flow_mask,
@@ -428,9 +428,9 @@ class DMVRTNetFixed160(BaseModule):
                 scale_info="deepA"
             )
 
-        # 4. DMVRTFlowFusion160 module (32 position: after M2, before Fre)
+        # 4. FlowGuidedFusion160 module (32 position: after M2, before Fre)
         if self.trsa32:
-            self.dmvrt_fusion_32 = DMVRTFlowFusion160(
+            self.dmvrt_fusion_32 = FlowGuidedFusion160(
                 mamba_dim=num_features * 2,  # 512
                 vrt_dim=vrt_dim,             # 96
                 pa_frames=self.pa_frames,
@@ -439,16 +439,16 @@ class DMVRTNetFixed160(BaseModule):
                 trsa_heads=trsa32_heads,     # 6
                 window_size=window_size
             )
-            self.advanced_fusion_32 = DMVRTAdvancedFusion(
+            self.advanced_fusion_32 = AdaptiveFusion(
                 mamba_dim=num_features * 2,  # 512
                 vrt_dim=vrt_dim,             # 96
                 use_flow_mask=use_flow_mask,
                 scale_info="latent"
             )
 
-        # 5. DMVRTFlowFusion160 module (64B position: after M3)
+        # 5. FlowGuidedFusion160 module (64B position: after M3)
         if self.trsa64b:
-            self.dmvrt_fusion_64b = DMVRTFlowFusion160(
+            self.dmvrt_fusion_64b = FlowGuidedFusion160(
                 mamba_dim=num_features,  # 256
                 vrt_dim=vrt_dim,         # 96
                 pa_frames=self.pa_frames,
@@ -457,7 +457,7 @@ class DMVRTNetFixed160(BaseModule):
                 trsa_heads=trsa64_heads, # 6
                 window_size=window_size
             )
-            self.advanced_fusion_64b = DMVRTAdvancedFusion(
+            self.advanced_fusion_64b = AdaptiveFusion(
                 mamba_dim=num_features,  # 256
                 vrt_dim=vrt_dim,         # 96
                 use_flow_mask=use_flow_mask,
@@ -468,7 +468,7 @@ class DMVRTNetFixed160(BaseModule):
         self._fix_ddp_checkpoint_issue()
 
     def _init_aimvr_components(self, feat_pretrained):
-        """Fully reuse all AIM-VR components - identical to dmvrt_net_fixed.py"""
+        """Fully reuse all AIM-VR components - identical to flame_net.py"""
         from ..aimvsr.modules.convnext import ConvNeXt
         from ..aimvsr.modules.head import ProjectionHead
         from ..aimvsr.modules.mambablock import MambaLayerglobal, MambaLayerlocal
@@ -562,7 +562,7 @@ class DMVRTNetFixed160(BaseModule):
         )
 
     def forward(self, lqs, hilbert_curve_large_scale, hilbert_curve_small_scale):
-        """Forward pass - fully reuses logic from dmvrt_net_fixed.py, adjusted for 160-patch"""
+        """Forward pass - fully reuses logic from flame_net.py, adjusted for 160-patch"""
         b, t, c, h, w = lqs.size()
 
         # ====== Step 0: Compute all optical flows at once ======
@@ -596,13 +596,13 @@ class DMVRTNetFixed160(BaseModule):
         _, c, feat_h, feat_w = f.shape
         x_new = f.reshape(b, t, self.num_features, feat_h, feat_w)
 
-        # ====== Step 2: Mamba M1 + DMVRTFlowFusion64A ======
+        # ====== Step 2: Mamba M1 + FlowGuidedFusion64A ======
         M1 = self.GlobalMambaBlock1(x_new)
         M1 = self.LocalMambaBlock1(M1, hilbert_curve_large_scale)
         M1 = self.GlobalMambaBlock2(M1)
         M1 = self.LocalMambaBlock2(M1, hilbert_curve_large_scale)
 
-        # DMVRTFlowFusion64A enhancement (optional)
+        # FlowGuidedFusion64A enhancement (optional)
         if use_trsa64a:
             # Fix: safely extract optical flow to avoid KeyError
             flows_40 = None  # For 160-patch, the "64 position" is actually a 40x40 feature map
@@ -614,13 +614,13 @@ class DMVRTNetFixed160(BaseModule):
             else:
                 print("No valid flows_40 detected, flows_tuple_64a will pass (None, None)")
                 flows_tuple_64a = (None, None)
-            M1 = self._apply_dmvrt_fusion(
+            M1 = self._apply_flow_fusion(
                 M1, flows_tuple_64a,
                 flow_fusion=self.dmvrt_fusion_64a,
                 advanced_fusion=self.advanced_fusion_64a
             )
 
-        # ====== Step 3: Downsampling + Mamba M2 + DMVRTFlowFusion32 ======
+        # ====== Step 3: Downsampling + Mamba M2 + FlowGuidedFusion32 ======
         x_down = rearrange(M1, 'n d c h w -> n c d h w')
         x_down = F.relu(self.conv1(x_down))
         x_down = rearrange(x_down, 'n c d h w -> n d c h w')
@@ -632,7 +632,7 @@ class DMVRTNetFixed160(BaseModule):
         M2 = self.GlobalMambaBlockLowRes3(M2)
         M2 = self.LocalMambaBlockLowRes3(M2, hilbert_curve_small_scale)
 
-        # DMVRTFlowFusion32 enhancement (placed after M2 output, before Fre)
+        # FlowGuidedFusion32 enhancement (placed after M2 output, before Fre)
         if use_trsa32:
             # Fix: safely extract optical flow to avoid KeyError
             flows_20 = None  # For 160-patch, the "32 position" is actually a 20x20 feature map
@@ -645,7 +645,7 @@ class DMVRTNetFixed160(BaseModule):
                 print("No valid flows_20 detected, flows_tuple_32 will pass (None, None)")
                 flows_tuple_32 = (None, None)
 
-            M2 = self._apply_dmvrt_fusion(
+            M2 = self._apply_flow_fusion(
                 M2, flows_tuple_32,
                 flow_fusion=self.dmvrt_fusion_32,
                 advanced_fusion=self.advanced_fusion_32
@@ -657,7 +657,7 @@ class DMVRTNetFixed160(BaseModule):
             M2 = self.fre2(lqs_reshaped, M2)
             M2 = rearrange(M2, '(b t) c h w -> b t c h w', b=b)
 
-        # ====== Step 4: Upsampling + Mamba M3 + DMVRTFlowFusion64B ======
+        # ====== Step 4: Upsampling + Mamba M3 + FlowGuidedFusion64B ======
         x_up = rearrange(M2, 'n d c h w -> n c d h w')
         x_up = F.relu(self.upconv2(x_up))
         if self.fre_decoder:
@@ -671,7 +671,7 @@ class DMVRTNetFixed160(BaseModule):
         M3 = self.GlobalMambaBlock4(M3)
         M3 = self.LocalMambaBlock4(M3, hilbert_curve_large_scale)
 
-        # DMVRTFlowFusion64B enhancement (optional)
+        # FlowGuidedFusion64B enhancement (optional)
         if use_trsa64b:
             # Fix: safely extract optical flow to avoid KeyError
             flows_40 = None  # For 160-patch, the "64B position" is also a 40x40 feature map
@@ -684,7 +684,7 @@ class DMVRTNetFixed160(BaseModule):
                 print("No valid flows_40 detected, flows_tuple_64b will pass (None, None)")
                 flows_tuple_64b = (None, None)
 
-            M3 = self._apply_dmvrt_fusion(
+            M3 = self._apply_flow_fusion(
                 M3, flows_tuple_64b,
                 flow_fusion=self.dmvrt_fusion_64b,
                 advanced_fusion=self.advanced_fusion_64b
@@ -700,8 +700,8 @@ class DMVRTNetFixed160(BaseModule):
 
         return final
 
-    def _apply_dmvrt_fusion(self, mamba_features, flows_tuple, flow_fusion, advanced_fusion):
-        """Apply DMVRTFlowFusion module - fully reuses logic from dmvrt_net_fixed.py"""
+    def _apply_flow_fusion(self, mamba_features, flows_tuple, flow_fusion, advanced_fusion):
+        """Apply FlowGuidedFusion module - fully reuses logic from flame_net.py"""
         # Switch check: return original features directly when pa_frames<=0
         if self.pa_frames <= 0:
             return mamba_features
@@ -720,7 +720,7 @@ class DMVRTNetFixed160(BaseModule):
                 print(f"Optical flow data is None, skipping VRT processing")
                 return mamba_features
 
-            # Step 1: DMVRTFlowFusion smart processing
+            # Step 1: FlowGuidedFusion smart processing
             vrt_features = flow_fusion(mamba_features, flows_backward, flows_forward)
 
             # Step 2: Compute flow_mask (optimized for weather degradation and occlusion)
@@ -729,7 +729,7 @@ class DMVRTNetFixed160(BaseModule):
             else:
                 flow_mask = None
 
-            # Step 3: DMVRTAdvancedFusion - unified 2.5D convolution fusion
+            # Step 3: AdaptiveFusion - unified 2.5D convolution fusion
             fused_features = advanced_fusion(mamba_features, vrt_features, flow_mask)
 
         except Exception as e:
@@ -811,7 +811,7 @@ class DMVRTNetFixed160(BaseModule):
             return None
 
     def _aimvr_reconstruction(self, x):
-        """AIM-VR reconstructor - fully reuses logic from dmvrt_net_fixed.py"""
+        """AIM-VR reconstructor - fully reuses logic from flame_net.py"""
         # First upsampling: double feature map spatial size + channel reduction
         x = self.conv_before_upsample1(x)  # [B, 128, T, H, W]
         x = rearrange(x, 'n c d h w -> n d c h w')
@@ -827,7 +827,7 @@ class DMVRTNetFixed160(BaseModule):
         return x
 
     def init_weights(self, pretrained=None, strict=False):
-        """Initialize weights - fully reuses logic from dmvrt_net_fixed.py"""
+        """Initialize weights - fully reuses logic from flame_net.py"""
         if isinstance(pretrained, str):
             logger = MMLogger.get_current_instance()
             logger.info(f'Load model from: {pretrained}')
@@ -837,7 +837,7 @@ class DMVRTNetFixed160(BaseModule):
                 self.feat_extract.init_weights()
 
     def _fix_ddp_checkpoint_issue(self):
-        """Fix parameter duplicate marking issue in DDP training - fully reuses logic from dmvrt_net_fixed.py"""
+        """Fix parameter duplicate marking issue in DDP training - fully reuses logic from flame_net.py"""
         print("Applying DDP fix: disabling all VRT checkpoint functionality...")
 
         checkpoint_disabled_count = 0

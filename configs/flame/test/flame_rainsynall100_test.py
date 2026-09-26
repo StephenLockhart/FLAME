@@ -1,11 +1,11 @@
-# DMVRTNetFixed RainSynAll100 full-test configuration
+# FlameNet RainSynAll100 full-test configuration
 # Resolves the issue of testing only 50 out of 100 videos
-# Based on the training config dmvrt-fixed-64a32_f128v48g8dp2_lr1e-4_RainSynAll100_20250916.py
+# Pairs with the released checkpoint checkpoints/flame_rainsynall100.pth
 
 default_scope = 'mmagic'
 
 # test configuration naming
-experiment_name = 'dmvrt-fixed-64a32_f128_RainSynAll100_FullTest_20250919'
+experiment_name = 'flame_rainsynall100_test'
 work_dir = f'./work_dirs/test/{experiment_name}'
 save_dir = './work_dirs/test'
 
@@ -21,9 +21,9 @@ resume = False
 
 # model settings - 128-channel version
 model = dict(
-    type='AimVRT',
+    type='Flame',
     generator=dict(
-        type='DMVRTNetFixed128',  # 🎯 use the 128-channel dedicated version
+        type='FlameNet128',  # 🎯 use the 128-channel dedicated version
         num_features=128,         # 🔧 128-channel version
         vrt_dim=48,
         scale_factor=scale,
@@ -33,7 +33,7 @@ model = dict(
         feat_pretrained='https://download.openmmlab.com/mmclassification/v0/convnext/downstream/convnext-tiny_3rdparty_32xb128-noema_in1k_20220301-795e9634.pth',
         spynet_path='https://github.com/JingyunLiang/VRT/releases/download/v0.0/spynet_sintel_final-3d2a1287.pth',
         
-        # 🔥 DMVRTFixed-specific configuration
+        # 🔥 FLAME-specific configuration
         use_flow_mask=True,
         flow_mask_strength=0.5,
         
@@ -202,14 +202,14 @@ model_wrapper_cfg = dict(
 3. start_idx=1: RainSynAll100 starts from 1, not 0
 4. persistent_workers=False: avoids dataloader conflicts
 5. num_input_frames=7: consistent with the training config
-6. Uses DMVRTNetFixed128: the 128-channel dedicated version
+6. Uses FlameNet128: the 128-channel dedicated version
 
 🚀 Run commands:
 # Single-GPU test
-python tools/test.py configs/aimvrtRain/test/dmvrt-fixed-64a32_f128_RainSynAll100_FullTest_20250919.py work_dirs/dmvrt-fixed-f-64a32_f128v48g8dp2_6pa2xb1-lr1e-4-300k_RainSynAll100_20250916/best_RainSynAll100_PSNR_iter_300000.pth
+python tools/test.py configs/flame/test/flame_rainsynall100_test.py checkpoints/flame_rainsynall100.pth
 
 # Dual-GPU test
-bash tools/dist_test.sh configs/aimvrtRain/test/dmvrt-fixed-64a32_f128_RainSynAll100_FullTest_20250919.py work_dirs/dmvrt-fixed-f-64a32_f128v48g8dp2_6pa2xb1-lr1e-4-300k_RainSynAll100_20250916/best_RainSynAll100_PSNR_iter_300000.pth 2
+bash tools/dist_test.sh configs/flame/test/flame_rainsynall100_test.py checkpoints/flame_rainsynall100.pth 2
 
 💡 Expected results:
 - Tests all 100 RainSynAll100 videos instead of only 50

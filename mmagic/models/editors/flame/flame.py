@@ -16,8 +16,8 @@ from einops import rearrange
 import math
 
 
-@MODELS.register_module()
-class AimVRT(BaseEditModel):                                 # Video restoration model based on AIM-VR+VRT hybrid, optimized for temporal processing
+@MODELS.register_module(name=['Flame', 'AimVRT'])
+class Flame(BaseEditModel):                                 # Video restoration model based on AIM-VR+VRT hybrid, optimized for temporal processing
     """Video super-resolution model based on AIM-VR+VRT hybrid.
 
     Args:
@@ -49,7 +49,7 @@ class AimVRT(BaseEditModel):                                 # Video restoration
         cache_key = f"{H}_{W}_{nf}"
 
         # Check CPU cache
-        if cache_key not in AimVRT._CPU_HILBERT_CACHE:
+        if cache_key not in Flame._CPU_HILBERT_CACHE:
             # Create curve using numpy
             hilbert_points = np.array(list(Hilbert3d(width=H, height=W, depth=nf)))
             # Precompute indices
@@ -57,16 +57,16 @@ class AimVRT(BaseEditModel):                                 # Video restoration
                       hilbert_points[:, 1] * nf +
                       hilbert_points[:, 2])
             # Store in CPU cache
-            AimVRT._CPU_HILBERT_CACHE[cache_key] = indices
+            Flame._CPU_HILBERT_CACHE[cache_key] = indices
 
-        return AimVRT._CPU_HILBERT_CACHE[cache_key]
+        return Flame._CPU_HILBERT_CACHE[cache_key]
 
     def __init__(
         self,
         generator,
         pixel_loss,
-        scale_factor=1,  # AimVRT default video restoration mode (scale=1)
-        num_input_frames=6,  # AimVRT default 6 frames, aligned with VRT
+        scale_factor=1,  # FLAME default video restoration mode (scale=1)
+        num_input_frames=6,  # FLAME default 6 frames, aligned with VRT
         perceptual_loss=None,
         contrast_loss=None,
         ensemble=None,
@@ -147,10 +147,10 @@ class AimVRT(BaseEditModel):                                 # Video restoration
         return is_mirror_extended
 
     def _init_hilbert_curves(self):
-        """Initialize Hilbert curves and move to GPU - AimVRT version supports dynamic frame count."""
+        """Initialize Hilbert curves and move to GPU - FLAME version supports dynamic frame count."""
         nf = self.num_input_frames
 
-        # AimVRT optimization: curve cache supporting multiple frame count configurations
+        # FLAME optimization: curve cache supporting multiple frame count configurations
         # Retrieve curves from CPU cache
         large_indices = self._create_hilbert_curve(H=64, W=64, nf=nf)
         small_indices = self._create_hilbert_curve(H=32, W=32, nf=nf)
@@ -172,7 +172,7 @@ class AimVRT(BaseEditModel):                                 # Video restoration
         output,
         gt,
         lq,
-        scale=1,  # AimVRT default restoration mode
+        scale=1,  # FLAME default restoration mode
         positive_range_initial=0,
         min_negative_distance_initial=96,
         patch_size=16,
@@ -190,7 +190,7 @@ class AimVRT(BaseEditModel):                                 # Video restoration
         B, T, C, H, W = output.shape
         device = output.device
 
-        # AimVRT: upsample in two steps to avoid dimension issues
+        # FLAME: upsample in two steps to avoid dimension issues
         lq_reshaped = lq.view(B * T, C, H // scale, W // scale)
 
         if scale != 1:
@@ -466,7 +466,7 @@ class AimVRT(BaseEditModel):                                 # Video restoration
         return losses
 
     def forward_inference(self, inputs, data_samples=None, **kwargs):
-        """Forward inference for validation/testing - AimVRT optimized version.
+        """Forward inference for validation/testing - FLAME optimized version.
         Args:
             inputs (Tensor): Input tensor with shape [B, T, C, H, W]
             data_samples (List[DataSample]): List of DataSample
@@ -479,10 +479,10 @@ class AimVRT(BaseEditModel):                                 # Video restoration
         hilbert_large = self.hilbert_large.to(device)
         hilbert_small = self.hilbert_small.to(device)
 
-        # AimVRT optimization: more flexible test configuration
+        # FLAME optimization: more flexible test configuration
         if self.test_cfg is not None:
             window_size = self.test_cfg.get('window_size', [2, 8, 8])
-            # AimVRT supports larger tile configuration (12 frames)
+            # FLAME supports larger tile configuration (12 frames)
             tile = self.test_cfg.get('tile', [12, 256, 256])
             tile_overlap = self.test_cfg.get('tile_overlap', [8, 192, 192])
 
@@ -510,17 +510,17 @@ class AimVRT(BaseEditModel):                                 # Video restoration
         return predictions
 
     def _test_video(self, lq, window_size, tile, tile_overlap, hilbert_large, hilbert_small):
-        """Test video as a whole or as clips - AimVRT version."""
+        """Test video as a whole or as clips - FLAME version."""
         # Get transition settings from test_cfg, default to hard switch
-        use_temporal_gradient = self.test_cfg.get('use_temporal_gradient', True)  # AimVRT default enables gaussian weights
+        use_temporal_gradient = self.test_cfg.get('use_temporal_gradient', True)  # FLAME default enables gaussian weights
         use_temporal_average = self.test_cfg.get('use_temporal_average', False)   # Cumulative average
 
         if use_temporal_gradient:
-            print("AimVRT: Using temporal smooth transition with gaussian weights")
+            print("FLAME: Using temporal smooth transition with gaussian weights")
         elif use_temporal_average:
-            print("AimVRT: Using temporal smooth transition with cumulative average")
+            print("FLAME: Using temporal smooth transition with cumulative average")
         else:
-            print("AimVRT: Using temporal hard transition")
+            print("FLAME: Using temporal hard transition")
 
         # Use standard logic: get window size from config
         num_frame_testing = tile[0]
@@ -598,17 +598,17 @@ class AimVRT(BaseEditModel):                                 # Video restoration
         return output
 
     def _test_clip(self, lq, window_size, tile, tile_overlap, hilbert_large, hilbert_small):
-        """Test clip using window splitting - AimVRT optimized version."""
+        """Test clip using window splitting - FLAME optimized version."""
         # Get spatial transition settings from test_cfg
-        use_spatial_gradient = self.test_cfg.get('use_spatial_gradient', True)  # AimVRT default enables gaussian weights
+        use_spatial_gradient = self.test_cfg.get('use_spatial_gradient', True)  # FLAME default enables gaussian weights
         use_spatial_average = self.test_cfg.get('use_spatial_average', False)   # Cumulative average
 
         if use_spatial_gradient:
-            print("AimVRT: Using spatial smooth transition with gaussian weights")
+            print("FLAME: Using spatial smooth transition with gaussian weights")
         elif use_spatial_average:
-            print("AimVRT: Using spatial smooth transition with cumulative average")
+            print("FLAME: Using spatial smooth transition with cumulative average")
         else:
-            print("AimVRT: Using spatial hard transition")
+            print("FLAME: Using spatial hard transition")
 
         sf = self.scale_factor
         size_patch = tile[1]
@@ -619,9 +619,9 @@ class AimVRT(BaseEditModel):                                 # Video restoration
             b, d, c, h, w = lq.size()
             stride = size_patch - overlap_size
 
-            # AimVRT boundary protection: ensure valid splitting strategy
+            # FLAME boundary protection: ensure valid splitting strategy
             if stride <= 0:
-                print(f"AimVRT: Spatial overlap too large ({overlap_size} >= {size_patch}), fallback to full processing")
+                print(f"FLAME: Spatial overlap too large ({overlap_size} >= {size_patch}), fallback to full processing")
                 # Process full image directly
                 output = self.generator(lq, hilbert_large, hilbert_small)
                 return output
@@ -699,14 +699,14 @@ class AimVRT(BaseEditModel):                                 # Video restoration
         return output
 
     def _create_temporal_weight(self, overlap_size):
-        """Create temporal gaussian weight - AimVRT optimized version"""
+        """Create temporal gaussian weight - FLAME optimized version"""
         if overlap_size <= 0:
             return torch.ones(1)  # Boundary protection
         x = torch.linspace(-3, 3, overlap_size)
         return torch.exp(-x**2 / 2)
 
     def _create_spatial_weight(self, overlap_size):
-        """Create spatial gaussian weight - AimVRT optimized version"""
+        """Create spatial gaussian weight - FLAME optimized version"""
         if overlap_size <= 0:
             return torch.ones(1)  # Boundary protection
         x = torch.linspace(-3, 3, overlap_size)

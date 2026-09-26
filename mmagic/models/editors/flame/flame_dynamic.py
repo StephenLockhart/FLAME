@@ -5,14 +5,14 @@ from typing import Dict, List, Optional
 
 from mmagic.registry import MODELS
 from mmagic.structures import DataSample
-from .aimvrt import AimVRT
+from .flame import Flame
 
 
-@MODELS.register_module()
-class AimVRTDynamic(AimVRT):
-    """AimVRT pipeline supporting dynamic patch size
+@MODELS.register_module(name=['FlameDynamic', 'AimVRTDynamic'])
+class FlameDynamic(Flame):
+    """FLAME pipeline supporting dynamic patch size
 
-    Resolves the hard-coded Hilbert curve issue in AimVRT, supporting arbitrary patch sizes (64, 128, 256, 512...)
+    Resolves the hard-coded Hilbert curve issue in Flame, supporting arbitrary patch sizes (64, 128, 256, 512...)
 
     Args:
         generator (dict): Config for the generator.
@@ -31,7 +31,7 @@ class AimVRTDynamic(AimVRT):
         """Dynamically generate Hilbert curves based on actual patch size
 
         Key fix:
-        - Original AimVRT hard-codes large=64x64, small=32x32
+        - Original FLAME hard-codes large=64x64, small=32x32
         - 128x128 patch -> feature map 32x32 -> needs large=32x32, small=16x16
         - 256x256 patch -> feature map 64x64 -> needs large=64x64, small=32x32
         - Dynamic computation avoids tensor dimension mismatch errors
@@ -47,7 +47,7 @@ class AimVRTDynamic(AimVRT):
             large_H, large_W = H, W
             small_H, small_W = max(H//2, 1), max(W//2, 1)
 
-            print(f"AimVRTDynamic: Detected img_size={self.generator.img_size}")
+            print(f"FlameDynamic: Detected img_size={self.generator.img_size}")
             print(f"Dynamically generating Hilbert curves: large_scale={large_H}x{large_W}, small_scale={small_H}x{small_W}")
 
             # Generate Hilbert curves
@@ -63,7 +63,7 @@ class AimVRTDynamic(AimVRT):
 
         else:
             # Fallback: if img_size cannot be obtained, use original fixed values
-            print("AimVRTDynamic: Cannot obtain img_size, falling back to fixed sizes 64x64, 32x32")
+            print("FlameDynamic: Cannot obtain img_size, falling back to fixed sizes 64x64, 32x32")
             large_indices = self._create_hilbert_curve(H=64, W=64, nf=nf)
             small_indices = self._create_hilbert_curve(H=32, W=32, nf=nf)
 
@@ -161,4 +161,4 @@ class AimVRTDynamic(AimVRT):
 
 
 # Export to main module for easier import
-__all__ = ['AimVRTDynamic']
+__all__ = ['FlameDynamic']

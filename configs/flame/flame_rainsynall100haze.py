@@ -1,5 +1,5 @@
-# DMVRTNetFixed fixed-version hybrid model training config - RainSynAll100Haze dataset 128-channel version (64A+32 dual-point enhancement)
-# fixed: DMVRTNetFixed fixed-version model + simplified pa_frames=2 optical flow + random adaptive flow_mask
+# FlameNet fixed-version hybrid model training config - RainSynAll100Haze dataset 128-channel version (64A+32 dual-point enhancement)
+# fixed: FlameNet fixed-version model + simplified pa_frames=2 optical flow + random adaptive flow_mask
 # 64a32: 64A+32 dual-point enhancement strategy (trsa64a=True, trsa32=True, trsa64b=False)
 # f128v48: Mamba feature dimension 128, VRT processing dimension 48
 # g8dp2: deformable_groups=8, depth=2 (two-layer TRSA processing)
@@ -11,16 +11,14 @@
 default_scope = 'mmagic'  # default registry scope for module lookup; otherwise mmengine raises errors
 
 load_batch_size = 4
-load_input_frames = 6  # DMVRTNetFixed uses 6 frames, aligned with VRT
+load_input_frames = 6  # FlameNet uses 6 frames, aligned with VRT
 input_val_frames = 7  # 🔧 use all 7 frames for validation
 input_frames = load_input_frames  # use the original frame count directly
 iter_k = 300  # 🔧 300K training iterations, referencing the proven VRDS config
 iters = 1000 * iter_k
 interval_val = 10000  # 🔧 fix: increase the validation interval to reduce validation frequency and avoid dataset issues
 
-experiment_name = (
-    f'dmvrt-fixed-f-64a32_f256v48g8dp2-p160_6pa2xb{load_batch_size}-lr1e-4-{iter_k}k_RainSynAll100Haze_20250922'  # 🔧 RainSynAll100Haze version: 256 channels + 160 patch
-)
+experiment_name = 'flame_rainsynall100haze'
 work_dir = f'./work_dirs/{experiment_name}'
 save_dir = './work_dirs'
 
@@ -32,9 +30,9 @@ resume = False
 
 # model settings
 model = dict(
-    type='AimVRTDynamic',  # 🔧 use the dynamic Hilbert pipeline, supports 128 patch
+    type='FlameDynamic',  # 🔧 use the dynamic Hilbert pipeline, supports 128 patch
     generator=dict(
-        type='DMVRTNetFixed160',  # 🎯 dedicated version for 160 patch: resolves hard-coding issues, supports flows_40/flows_20
+        type='FlameNet160',  # 🎯 dedicated version for 160 patch: resolves hard-coding issues, supports flows_40/flows_20
         num_features=256,                    # 🔧 256 channels, referencing the proven VRDS config
         vrt_dim=48,                         # 48 → 48, more consistent with VRT
         scale_factor=scale,
@@ -44,7 +42,7 @@ model = dict(
         feat_pretrained='https://download.openmmlab.com/mmclassification/v0/convnext/downstream/convnext-tiny_3rdparty_32xb128-noema_in1k_20220301-795e9634.pth',
         spynet_path='https://github.com/JingyunLiang/VRT/releases/download/v0.0/spynet_sintel_final-3d2a1287.pth',
         
-        # 🔥 DMVRTFixed-specific configuration (core fixes)
+        # 🔥 FLAME-specific configuration (core fixes)
         use_flow_mask=True,              # flow mask switch; enables adaptive adjustment
         flow_mask_strength=0.5,          # baseline value of the adaptive strength
         
@@ -211,12 +209,12 @@ train_cfg = dict(type='IterBasedTrainLoop', max_iters=iters, val_interval=interv
 val_cfg = dict(type='MultiValLoop')
 test_cfg = dict(type='MultiTestLoop')
 
-# optimizer - DMVRTNetFixed 128-channel dedicated config (fixed version: fine-grained parameter grouping strategy)
+# optimizer - FlameNet 128-channel dedicated config (fixed version: fine-grained parameter grouping strategy)
 optim_wrapper = dict(
     constructor='DefaultOptimWrapperConstructor',
     type='OptimWrapper',  # 🔧 use a standard optimizer wrapper, stable and reliable
     optimizer=dict(type='AdamW', lr=1e-4, betas=(0.9, 0.999), weight_decay=0.0001),
-    # 🔥 128-channel version: dedicated parameter-grouping optimization strategy for DMVRTNetFixed
+    # 🔥 128-channel version: dedicated parameter-grouping optimization strategy for FlameNet
     paramwise_cfg=dict(
         custom_keys={
             'spynet': dict(lr_mult=0.25),        # SpyNet uses 1/4 learning rate (following the standard config)
@@ -224,23 +222,23 @@ optim_wrapper = dict(
             'advanced_fusion': dict(lr_mult=2), # larger learning rate for the other parameters of the advanced fusion layer
         }
     ),
-    clip_grad=dict(max_norm=4.0, norm_type=2),  # 🔧 DMVRTNetFixed: relatively strong gradient clipping
+    clip_grad=dict(max_norm=4.0, norm_type=2),  # 🔧 FlameNet: relatively strong gradient clipping
 )
 
 # model compilation to speed up training
 cfg = dict(compile='compile_options')
 
-# learning policy - DMVRTNetFixed 128-channel learning rate schedule (300K total training: 50K warm-up + 150K stable + 100K decay)
+# learning policy - FlameNet 128-channel learning rate schedule (300K total training: 50K warm-up + 150K stable + 100K decay)
 param_scheduler = [
-    # 🔧 DMVRTNetFixed 128-channel warmup: 50k warm-up period to stabilize the complex optical-flow fusion
+    # 🔧 FlameNet 128-channel warmup: 50k warm-up period to stabilize the complex optical-flow fusion
     dict(
         type='LinearLR',
         start_factor=0.001,
         by_epoch=False,
         begin=0,
-        end=50000,  # 50k warmup, letting DMVRTFlowFusion activate gradually
+        end=50000,  # 50k warmup, letting FlowGuidedFusion activate gradually
     ),
-    # 🔧 DMVRTNetFixed 128-channel main training: cosine annealing (starts at 200k, corresponding to 300k total training)
+    # 🔧 FlameNet 128-channel main training: cosine annealing (starts at 200k, corresponding to 300k total training)
     dict(
         type='CosineRestartLR',
         periods=[(iters-200000)],  # remaining 100k iterations (300k-200k=100k)
@@ -294,7 +292,7 @@ vis_backends = [
     #     type='WandbVisBackend',
     #     init_kwargs=dict(
     #         project='FLAME',
-    #         name='dmvrt-fixed-f-64a32-f256-p160_RainSynAll100Haze'
+    #         name='flame_rainsynall100haze'
     #     ),
     #     save_dir=work_dir
     # )
@@ -322,15 +320,15 @@ custom_hooks = [
 model_wrapper_cfg = dict(
     type='MMSeparateDistributedDataParallel',
     broadcast_buffers=False,
-    find_unused_parameters=True,  # set to True to avoid DMVRTFixed parameter issues
+    find_unused_parameters=True,  # set to True to avoid FLAME parameter issues
 )
 
-# DMVRTNetFixed 128-channel RainSynAll100Haze dataset version configuration notes
+# FlameNet 128-channel RainSynAll100Haze dataset version configuration notes
 """
-🎯 DMVRTNetFixed 128-channel version (optical flow fix + adaptive mask version) - RainSynAll100Haze dataset configuration notes (128 patch + dynamic Hilbert pipeline)
+🎯 FlameNet 128-channel version (optical flow fix + adaptive mask version) - RainSynAll100Haze dataset configuration notes (128 patch + dynamic Hilbert pipeline)
 
 📊 Naming convention:
-- fixed: DMVRTNetFixed fixed-version model + simplified pa_frames=2 optical flow + random adaptive flow_mask
+- fixed: FlameNet fixed-version model + simplified pa_frames=2 optical flow + random adaptive flow_mask
 - f: frequency enhancement (fre_decoder=True)
 - 64a32: 64A+32 dual-point enhancement strategy (trsa64a=True, trsa32=True, trsa64b=False)
 - f128v48: Mamba feature dimension 128, VRT processing dimension 48
@@ -341,8 +339,8 @@ model_wrapper_cfg = dict(
 - 300k: 300K training iterations (referencing the proven VRDS config)
 
 🔧 Key technical modifications (128 patch adaptation):
-1. **Model architecture**: AimVRT → AimVRTDynamic (supports the dynamic Hilbert pipeline)
-2. **Network type**: DMVRTNetFixed → DMVRTNetFixed128 (dedicated version for 128 patch)
+1. **Model architecture**: Flame → FlameDynamic (supports the dynamic Hilbert pipeline)
+2. **Network type**: FlameNet → FlameNet128 (dedicated version for 128 patch)
 3. **Training patch**: original 256×256 → 128×128 (adapting to the dataset's minimum image size of 215×352)
 4. **Inference patch**: original 256×256 → 128×128, overlap: 192×192 → 96×96
 5. **VRT config**: img_size [6,64,64] → [6,32,32] (corresponding feature map size)
@@ -394,7 +392,7 @@ model_wrapper_cfg = dict(
 - Keeps at most 5 checkpoint files
 
 🚀 Training command:
-python tools/train.py configs/aimvrtRain/dmvrt-fixed-64a32_f128v48g8dp2_lr1e-4_RainSynAll100Haze_20250916.py
+python tools/train.py configs/flame/flame_rainsynall100haze.py
 
 Expected: the 128-channel + 128-patch version achieves stable training results on RainSynAll100_Haze; rain-haze mixture degradation is highly challenging
 """ 

@@ -14,12 +14,12 @@ Apache License 2.0. The full license text is in [LICENSE](LICENSE).
 
 ## 2. VRT components (CC BY-NC 4.0)
 
-`mmagic/models/editors/aimvrt/VRT-main/` contains code adapted from
+`mmagic/models/editors/flame/VRT-main/` contains code adapted from
 [VRT: Video Restoration Transformer](https://github.com/JingyunLiang/VRT)
 (Jingyun Liang et al.), which is licensed under the
 **Creative Commons Attribution-NonCommercial 4.0 International License
 (CC BY-NC 4.0)**. The complete license text is kept in
-`mmagic/models/editors/aimvrt/VRT-main/LICENSE`.
+`mmagic/models/editors/flame/VRT-main/LICENSE`.
 
 Files in that directory (including `models/network_vrt.py`, which provides
 `SpyNet`, `Stage`, `DCNv2PackFlowGuided`, and `Mlp_GEGLU`) additionally retain

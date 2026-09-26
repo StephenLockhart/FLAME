@@ -35,8 +35,8 @@ def load_vrt_modules():
 Stage, SpyNet, DCNv2PackFlowGuided, Mlp_GEGLU = load_vrt_modules()
 
 
-class DMVRTFlowFusion128(nn.Module):
-    """128-patch-specific VRT optical flow fusion module - fully reuses logic from dmvrt_net_fixed, only adjusts feature map sizes"""
+class FlowGuidedFusion(nn.Module):
+    """Complete VRT optical flow fusion module - TRSA+DCNv2+GEGLU fully reused"""
 
     def __init__(self, mamba_dim, vrt_dim=96, pa_frames=6, deformable_groups=16,
                  trsa_depth=2, trsa_heads=6, window_size=[6, 8, 8]):
@@ -48,15 +48,19 @@ class DMVRTFlowFusion128(nn.Module):
         # Step 1: Dimension reduction (before VRT)
         self.feat_to_vrt = nn.Conv3d(mamba_dim, vrt_dim, 1)
 
-        # Step 2: Smart VRT Stage - 128-patch version, feature map size adjusted to 32x32
-        print(f"DMVRTFlowFusion128: mamba_dim={mamba_dim}, vrt_dim={vrt_dim}, "
-              f"input_resolution=(dynamic,32,32), pa_frames={pa_frames}")
+        # Step 2: Smart VRT Stage - create two instances
+        # Fix: dynamically compute input_resolution based on actual feature map size
+        # We will compute dynamically during forward; using default values here
 
-        # No-flow VRT Stage (pa_frames=0) - 128-patch: 32x32 feature map
+        # Debug info
+        print(f"FlowGuidedFusion: mamba_dim={mamba_dim}, vrt_dim={vrt_dim}, "
+              f"input_resolution=(dynamic), pa_frames={pa_frames}")
+
+        # No-flow VRT Stage (pa_frames=0)
         self.vrt_stage_no_flow = Stage(
             in_dim=vrt_dim,
             dim=vrt_dim,
-            input_resolution=(window_size[0], 32, 32),  # 128-patch corresponds to 32x32 feature map
+            input_resolution=(window_size[0], 64, 64),  # Temporary value, will be updated dynamically
             depth=trsa_depth,
             num_heads=trsa_heads,
             window_size=window_size,
@@ -69,12 +73,12 @@ class DMVRTFlowFusion128(nn.Module):
             use_checkpoint_ffn=False,
         )
 
-        # Flow VRT Stage (actual pa_frames) - 128-patch: 32x32 feature map
+        # Flow VRT Stage (actual pa_frames)
         if pa_frames > 0:
             self.vrt_stage_with_flow = Stage(
                 in_dim=vrt_dim,
                 dim=vrt_dim,
-                input_resolution=(window_size[0], 32, 32),  # 128-patch corresponds to 32x32 feature map
+                input_resolution=(window_size[0], 64, 64),  # Temporary value, will be updated dynamically
                 depth=trsa_depth,
                 num_heads=trsa_heads,
                 window_size=window_size,
@@ -93,7 +97,7 @@ class DMVRTFlowFusion128(nn.Module):
         self.vrt_to_feat = nn.Conv3d(vrt_dim, vrt_dim, 1)
 
     def _update_vrt_input_resolution(self, vrt_stage, actual_shape):
-        """Dynamically update VRT Stage's input_resolution - 128-patch version"""
+        """Dynamically update VRT Stage's input_resolution"""
         t, h, w = actual_shape
         new_resolution = (t, h, w)
 
@@ -113,7 +117,13 @@ class DMVRTFlowFusion128(nn.Module):
                     block.input_resolution = new_resolution
 
     def forward(self, mamba_features, flows_backward=None, flows_forward=None):
-        """128-patch-specific forward pass - fully reuses logic from dmvrt_net_fixed"""
+        """
+        Args:
+            mamba_features: [B, T, C_mamba, H, W] Mamba output features
+            flows_backward/forward: [B, T-1, 2, H, W] optical flow at corresponding scale (can be None when pa_frames=0)
+        Returns:
+            vrt_features: [B, T, vrt_dim, H, W] VRT-enhanced features
+        """
         try:
             # Step 1: Reduce Mamba feature dimensions to VRT dimension
             mamba_3d = rearrange(mamba_features, 'b t c h w -> b c t h w')
@@ -130,22 +140,23 @@ class DMVRTFlowFusion128(nn.Module):
             if self.requested_pa_frames > 0 and has_valid_flows and self.vrt_stage_with_flow is not None:
                 # Fix: check optical flow format expected by VRT Stage
                 try:
-                    b_flow, t_minus_1, c_flow, h_flow, w_flow = flows_backward.shape  # [B, T-1, 2, H, W]
+                    b, t_minus_1, c, h, w = flows_backward.shape  # [B, T-1, 2, H, W]
+                    # t = t_minus_1 + 1  # T (kept as comment; pa_frames=2 branch does not need this variable)
                     # Step 1: 1-frame-interval optical flow (use directly)
                     flows_backward_1 = flows_backward  # [B, T-1, 2, H, W]
                     flows_forward_1 = flows_forward
 
-                    # Fix: uniformly use 3 optical flows, consistent with original dmvrt_net.py
-                    flows_backward_2 = self._generate_2frame_flows(flows_backward_1, flows_forward_1, backward=True)
-                    flows_forward_2 = self._generate_2frame_flows(flows_backward_1, flows_forward_1, backward=False)
-                    flows_backward_3 = self._generate_3frame_flows(flows_backward_1, flows_forward_1, flows_backward_2, flows_forward_2, backward=True)
-                    flows_forward_3 = self._generate_3frame_flows(flows_backward_1, flows_forward_1, flows_backward_2, flows_forward_2, backward=False)
+                    # Fix: uniformly use 3 optical flows, consistent with original flame_net.py
+                    # Regardless of pa_frames value, DCNv2PackFlowGuided expects fixed channel count computation
+                    flows_backward_2 = FlowGuidedFusion._generate_2frame_flows(flows_backward_1, flows_forward_1, backward=True)
+                    flows_forward_2 = FlowGuidedFusion._generate_2frame_flows(flows_backward_1, flows_forward_1, backward=False)
+                    flows_backward_3 = FlowGuidedFusion._generate_3frame_flows(flows_backward_1, flows_forward_1, flows_backward_2, flows_forward_2, backward=True)
+                    flows_forward_3 = FlowGuidedFusion._generate_3frame_flows(flows_backward_1, flows_forward_1, flows_backward_2, flows_forward_2, backward=False)
 
-                    # Build optical flow list format expected by VRT Stage
+                    # Build optical flow list format expected by VRT Stage (identical to original flame_net.py)
                     flows_backward_list = [flows_backward_1, flows_backward_2, flows_backward_3]
                     flows_forward_list = [flows_forward_1, flows_forward_2, flows_forward_3]
 
-                    self._update_vrt_input_resolution(self.vrt_stage_with_flow, actual_shape)
                     vrt_enhanced = self.vrt_stage_with_flow(vrt_3d, flows_backward_list, flows_forward_list)
 
                 except Exception as e:
@@ -168,7 +179,7 @@ class DMVRTFlowFusion128(nn.Module):
             return vrt_features
 
         except Exception as e:
-            print(f"DMVRTFlowFusion128 processing failed: {e}, returning dimension-reduced Mamba features")
+            print(f"FlowGuidedFusion processing failed: {e}, returning original Mamba features")
             # On complete failure, return dimension-reduced Mamba features
             mamba_3d = rearrange(mamba_features, 'b t c h w -> b c t h w')
             # Fix: correctly handle feature dimension reduction
@@ -272,7 +283,17 @@ class DMVRTFlowFusion128(nn.Module):
         return flows_3
 
     def _compute_flow_mask_weather_robust(self, flows_backward, flows_forward):
-        """Compute weather-robust optical flow quality mask - specifically designed for weather degradation and occlusion"""
+        """Compute weather-robust optical flow quality mask - specifically designed for weather degradation and occlusion
+
+        Addresses inaccurate optical flow in complex weather degradation (rain, fog, snow) and occlusion,
+        with a simple yet effective quality assessment mechanism.
+
+        Args:
+            flows_backward, flows_forward: optical flow [B, T-1, 2, H, W]
+
+        Returns:
+            flow_mask: quality mask [B, T, 1, H, W], value range [0.2, 1.0]
+        """
         b, t_minus_1, _, h, w = flows_backward.size()
         t = t_minus_1 + 1
 
@@ -282,7 +303,8 @@ class DMVRTFlowFusion128(nn.Module):
         mag_avg = (mag_backward + mag_forward) / 2
 
         # Weather degradation feature: abnormally large optical flow values usually indicate degradation
-        mag_median = torch.median(mag_avg.reshape(b, t_minus_1, -1), dim=2, keepdim=True)[0]  # [B, T-1, 1]
+        # Use adaptive threshold instead of fixed value to adapt to different scenes
+        mag_median = torch.median(mag_avg.reshape(b, t_minus_1, -1), dim=2, keepdim=True)[0]  # [B, T-1, 1] - fix for batch_size>1
         mag_median = mag_median.unsqueeze(-1).unsqueeze(-1)  # [B, T-1, 1, 1, 1]
 
         # Abnormal flow detection: regions exceeding 3x median may be weather degradation
@@ -290,6 +312,7 @@ class DMVRTFlowFusion128(nn.Module):
         weather_confidence = 1.0 - abnormal_flow  # Low confidence in abnormal regions
 
         # 2. Forward-backward consistency (occlusion detection)
+        # Forward and backward optical flows are usually inconsistent in occluded regions
         consistency_error = torch.norm(
             flows_backward + flows_forward,  # Should be close to 0 ideally
             dim=2, keepdim=True
@@ -297,7 +320,7 @@ class DMVRTFlowFusion128(nn.Module):
 
         # Adaptive consistency threshold
         consistency_median = torch.median(
-            consistency_error.reshape(b, t_minus_1, -1), dim=2, keepdim=True
+            consistency_error.reshape(b, t_minus_1, -1), dim=2, keepdim=True  # Fix for batch_size>1
         )[0].unsqueeze(-1).unsqueeze(-1)  # [B, T-1, 1, 1, 1]
 
         # Occlusion detection: regions where consistency error exceeds 2x median may be occluded
@@ -305,6 +328,8 @@ class DMVRTFlowFusion128(nn.Module):
         occlusion_confidence = 1.0 - occlusion_mask  # Low confidence in occluded regions
 
         # 3. Optical flow smoothness (texture region detection)
+        # Compute spatial gradient of optical flow; smoother regions have more reliable optical flow
+        # Use simple Sobel operator to detect flow smoothness
         flow_grad_x = torch.abs(flows_backward[:, :, :, :, 1:] - flows_backward[:, :, :, :, :-1])
         flow_grad_y = torch.abs(flows_backward[:, :, :, 1:, :] - flows_backward[:, :, :, :-1, :])
 
@@ -314,13 +339,14 @@ class DMVRTFlowFusion128(nn.Module):
 
         flow_smoothness = torch.norm(torch.cat([flow_grad_x, flow_grad_y], dim=2), dim=2, keepdim=True)
         smoothness_median = torch.median(
-            flow_smoothness.reshape(b, t_minus_1, -1), dim=2, keepdim=True
+            flow_smoothness.reshape(b, t_minus_1, -1), dim=2, keepdim=True  # Fix for batch_size>1
         )[0].unsqueeze(-1).unsqueeze(-1)
 
         # Smooth regions are more reliable
         smooth_confidence = torch.sigmoid(-(flow_smoothness - smoothness_median))
 
         # 4. Comprehensive quality score (simple weighted combination)
+        # Weight design: weather robustness 40% + occlusion detection 35% + smoothness 25%
         quality_score = (0.4 * weather_confidence +
                         0.35 * occlusion_confidence +
                         0.25 * smooth_confidence)  # [B, T-1, 1, H, W]
@@ -329,30 +355,144 @@ class DMVRTFlowFusion128(nn.Module):
         quality_score = torch.clamp(quality_score, 0.2, 1.0)
 
         # 5. Extend to full temporal dimension [B, T, 1, H, W]
+        # Frame 0 uses the quality score from frames 0-1
         first_frame_score = quality_score[:, 0:1, :, :, :]  # [B, 1, 1, H, W]
         flow_mask = torch.cat([first_frame_score, quality_score], dim=1)  # [B, T, 1, H, W]
 
         return flow_mask
 
 
-# Reuse DMVRTAdvancedFusion from the original version
-from .dmvrt_net_fixed import DMVRTAdvancedFusion
+class AdaptiveFusion(nn.Module):
+    """Advanced feature fusion module - 2.5D convolution + flow_mask learnable adaptive adjustment"""
+
+    def __init__(self, mamba_dim, vrt_dim, use_flow_mask=True, flow_mask_strength=0.5, scale_info="Unknown"):
+        super().__init__()
+        self.mamba_dim = mamba_dim  # 256 or 512
+        self.vrt_dim = vrt_dim      # 96
+        self.use_flow_mask = use_flow_mask
+        self.scale_info = scale_info  # Scale identifier info (e.g. "64-scale A", "32-scale", etc.)
+        # Fix: change flow_mask_strength to a learnable parameter
+        self.flow_mask_strength = nn.Parameter(torch.tensor(float(flow_mask_strength)), requires_grad=True)
+
+        # Unified 2.5D convolution fusion (replacing Mlp_GEGLU)
+        self.fusion_conv = nn.Conv3d(
+            mamba_dim + vrt_dim,  # 256+96 or 512+96
+            mamba_dim,           # Output back to original Mamba dimension
+            kernel_size=(1, 3, 3), padding=(0, 1, 1)
+        )
+
+        # flow_mask weight adjustment layer
+        if use_flow_mask:
+            self.flow_mask_proj = nn.Sequential(
+                nn.Conv3d(1, 8, kernel_size=(1, 3, 3), padding=(0, 1, 1)),
+                nn.ReLU(inplace=True),
+                nn.Conv3d(8, 1, kernel_size=1),
+                nn.Sigmoid()  # Output adjustment weight in [0,1] range
+            )
+
+    def forward(self, mamba_features, vrt_features, flow_mask=None):
+        """
+        Args:
+            mamba_features: [B, T, mamba_dim, H, W] Mamba original features
+            vrt_features: [B, T, vrt_dim, H, W] VRT-enhanced features
+            flow_mask: [B, T, 1, H, W] optical flow quality mask
+        Returns:
+            fused_features: [B, T, mamba_dim, H, W] fused features
+        """
+        b, t, mamba_c, h, w = mamba_features.shape
+        vrt_c = vrt_features.shape[2]
+
+        # flow_mask adaptive adjustment of VRT feature contribution
+        # Debug: check usage conditions
+        if torch.rand(1) < 0.005:  # 0.5% probability to print debug info
+            print(f"[DEBUG] use_flow_mask={self.use_flow_mask}, flow_mask={'None' if flow_mask is None else f'shape{flow_mask.shape}'}")
+
+        if self.use_flow_mask and flow_mask is not None:
+            # Adaptive strength dynamically adjusted based on learnable parameter
+            adaptive_strength = self.flow_mask_strength  # Learnable adaptive parameter
+
+            # Debug: ensure the parameter's computation path is executed
+            if torch.rand(1) < 0.01:
+                grad_info = f"grad={adaptive_strength.grad.item():.6f}" if adaptive_strength.grad is not None else "grad=None"
+                print(f"[AdaptiveFusion-{self.scale_info}] Parameter in use! learnable_strength={adaptive_strength.item():.3f}, {grad_info}, requires_grad={adaptive_strength.requires_grad}")
+
+                # Enhanced monitoring: show parameter changes and usage
+                if not hasattr(self, '_last_strength_value'):
+                    self._last_strength_value = adaptive_strength.item()
+                    self._strength_update_count = 0
+                else:
+                    current_value = adaptive_strength.item()
+                    change = abs(current_value - self._last_strength_value)
+                    if change > 1e-6:  # If significant change
+                        self._strength_update_count += 1
+                        print(f"    [{self.scale_info}] Parameter changed: {self._last_strength_value:.6f} -> {current_value:.6f} (delta={change:.6f}, update count:{self._strength_update_count})")
+                        self._last_strength_value = current_value
+
+                # Optical flow usage statistics
+                if not hasattr(self, '_flow_usage_count'):
+                    self._flow_usage_count = 0
+                self._flow_usage_count += 1
+                if self._flow_usage_count % 100 == 0:  # Print every 100 uses
+                    print(f"    [{self.scale_info}] flow_mask usage stats: total {self._flow_usage_count} times")
+
+            # flow_mask enhancement: [B, T, 1, H, W] -> [B, T, 1, H, W]
+            flow_weight = self.flow_mask_proj(
+                rearrange(flow_mask, 'b t c h w -> b c t h w')
+            )  # [B, 1, T, H, W]
+            flow_weight = rearrange(flow_weight, 'b c t h w -> b t c h w')
+
+            # Adaptive adjustment of VRT feature strength (learnable adaptive coefficient)
+            # Formula: vrt_features = vrt_features * (adaptive_strength * flow_weight + (1 - adaptive_strength))
+            # Where: adaptive_strength is a learnable parameter, flow_weight is the quality mask weight from DS-Flow output
+            vrt_features = vrt_features * (adaptive_strength * flow_weight + (1 - adaptive_strength))
+        else:
+            # Debug: parameter not being used
+            if torch.rand(1) < 0.01:
+                print(f"[AdaptiveFusion-{self.scale_info}] Parameter not in use: use_flow_mask={self.use_flow_mask}, flow_mask={'None' if flow_mask is None else 'Valid'}")
+                if hasattr(self, 'flow_mask_strength'):
+                    param = self.flow_mask_strength
+                    print(f"    [{self.scale_info}] Unused parameter value: {param.item():.6f}, requires_grad: {param.requires_grad}")
+
+        # Concat features: [B, T, mamba_dim+vrt_dim, H, W]
+        concat_features = torch.cat([mamba_features, vrt_features], dim=2)
+
+        # Convert to 3D convolution format: [B, mamba_dim+vrt_dim, T, H, W]
+        concat_3d = rearrange(concat_features, 'b t c h w -> b c t h w')
+
+        # 2.5D convolution fusion
+        fused_3d = self.fusion_conv(concat_3d)  # [B, mamba_dim, T, H, W]
+
+        # Convert back to 4D format: [B, T, mamba_dim, H, W]
+        fused_features = rearrange(fused_3d, 'b c t h w -> b t c h w')
+
+        return fused_features
 
 
-@MODELS.register_module()
-class DMVRTNetFixed128(BaseModule):
-    """128-patch-specific version of DMVRTNetFixed
+@MODELS.register_module(name=['FlameNet', 'DMVRTNetFixed'])
+class FlameNet(BaseModule):
+    """FLAME network - Mamba-VRT network with complete VRT optical flow fusion
 
-    Specifically optimized for 128x128 patch training, fully reuses logic from dmvrt_net_fixed.py:
-    - Main difference: feature map sizes in optical flow computation (32x32 vs original 64x64, 16x16 vs original 32x32)
-    - All other logic is identical to ensure stability
+    Core design: dimension reduction - enhancement - 2.5D convolution fusion strategy (D stands for Deformable)
+    1. Mamba features [256] -> dimension reduction [48]
+    2. Complete VRT optical flow fusion [48] (TRSA+DCNv2PackFlowGuided)
+    3. 2.5D convolution fusion [48+256] -> unified Conv3d fusion [256] (final fusion)
+    4. flow_mask adaptive adjustment of VRT feature contribution strength
+    5. FreModule fusion unified to 2.5D convolution mechanism
+
+    Advantages:
+    - VRT native precision: fully reuses Stage, DCNv2PackFlowGuided
+    - Computationally efficient: 48-dim VRT processing, reduces ~85% computational overhead
+    - Feature preservation: unified fusion via 2.5D convolution, clean and consistent architecture
+    - Adaptive fusion: flow_mask dynamically adjusts fusion strength
+    - Clean architecture: unified Conv3d(1,3,3) for all fusion operations
+    - DDP optimization: force-disable checkpoint, ensures multi-GPU training stability
     """
 
     def __init__(self,
                  num_features=256,
                  vrt_dim=96,  # VRT processing dimension, aligned with original VRT
                  scale_factor=1,
-                 img_size=[6, 32, 32],  # Feature map size for 128-patch
+                 img_size=[6, 64, 64],
                  window_size=[6, 8, 8],
                  pa_frames=6,  # Use all 6 frames
                  feat_pretrained=None,
@@ -374,7 +514,7 @@ class DMVRTNetFixed128(BaseModule):
         self.vrt_dim = vrt_dim
         self.scale_factor = scale_factor
         self.pa_frames = pa_frames
-        self.requested_pa_frames = pa_frames
+        self.requested_pa_frames = pa_frames  # Fix: test code needs this attribute
         self.img_size = img_size
         self.fre_decoder = fre_decoder
 
@@ -390,37 +530,42 @@ class DMVRTNetFixed128(BaseModule):
         self._init_aimvr_components(feat_pretrained)
 
         # 2. Optical flow estimator (reuse VRT's SpyNet)
+        # Fix: completely avoid SpyNet-related issues
         self.spynet = None
         if self.pa_frames > 0 and spynet_path is not None:
             try:
+                # Additional validation of spynet_path
                 if isinstance(spynet_path, str) and len(spynet_path.strip()) > 0:
                     self.spynet = SpyNet(spynet_path, [2, 3, 4, 5])
+                    if self.spynet is None:
+                        raise RuntimeError("SpyNet initialization returned None")
                     print(f"SpyNet initialized successfully, pa_frames={self.pa_frames}")
                 else:
                     raise ValueError("spynet_path is empty or invalid")
             except Exception as e:
                 print(f"SpyNet initialization failed: {e}")
                 print("Forcing fallback to no-flow mode...")
-                self.pa_frames = 0
+                self.pa_frames = 0  # Force set to 0
                 self.spynet = None
         else:
             print(f"Skipping SpyNet initialization: pa_frames={self.pa_frames}, spynet_path={spynet_path}")
+            # Ensure pa_frames=0 completely avoids optical flow computation
             if self.pa_frames <= 0:
                 self.pa_frames = 0
             self.spynet = None
 
-        # 3. DMVRTFlowFusion128 module (64A position: after M1)
+        # 3. FlowGuidedFusion module (64A position: after M1)
         if self.trsa64a:
-            self.dmvrt_fusion_64a = DMVRTFlowFusion128(
+            self.dmvrt_fusion_64a = FlowGuidedFusion(
                 mamba_dim=num_features,  # 256
                 vrt_dim=vrt_dim,         # 96
-                pa_frames=self.pa_frames,
+                pa_frames=self.pa_frames,  # Use checked pa_frames
                 deformable_groups=deformable_groups,  # 16
                 trsa_depth=trsa64_depth, # 2
                 trsa_heads=trsa64_heads, # 6
                 window_size=window_size
             )
-            self.advanced_fusion_64a = DMVRTAdvancedFusion(
+            self.advanced_fusion_64a = AdaptiveFusion(
                 mamba_dim=num_features,  # 256
                 vrt_dim=vrt_dim,         # 96
                 use_flow_mask=use_flow_mask,
@@ -428,36 +573,36 @@ class DMVRTNetFixed128(BaseModule):
                 scale_info="deepA"
             )
 
-        # 4. DMVRTFlowFusion128 module (32 position: after M2, before Fre)
+        # 4. FlowGuidedFusion module (32 position: after M2, before Fre)
         if self.trsa32:
-            self.dmvrt_fusion_32 = DMVRTFlowFusion128(
+            self.dmvrt_fusion_32 = FlowGuidedFusion(
                 mamba_dim=num_features * 2,  # 512
                 vrt_dim=vrt_dim,             # 96
-                pa_frames=self.pa_frames,
+                pa_frames=self.pa_frames,    # Use checked pa_frames
                 deformable_groups=deformable_groups,  # 16
                 trsa_depth=trsa32_depth,     # 2
                 trsa_heads=trsa32_heads,     # 6
                 window_size=window_size
             )
-            self.advanced_fusion_32 = DMVRTAdvancedFusion(
+            self.advanced_fusion_32 = AdaptiveFusion(
                 mamba_dim=num_features * 2,  # 512
                 vrt_dim=vrt_dim,             # 96
                 use_flow_mask=use_flow_mask,
                 scale_info="latent"
             )
 
-        # 5. DMVRTFlowFusion128 module (64B position: after M3)
+        # 5. FlowGuidedFusion module (64B position: after M3)
         if self.trsa64b:
-            self.dmvrt_fusion_64b = DMVRTFlowFusion128(
+            self.dmvrt_fusion_64b = FlowGuidedFusion(
                 mamba_dim=num_features,  # 256
                 vrt_dim=vrt_dim,         # 96
-                pa_frames=self.pa_frames,
+                pa_frames=self.pa_frames,  # Use checked pa_frames
                 deformable_groups=deformable_groups,  # 16
                 trsa_depth=trsa64_depth, # 2
                 trsa_heads=trsa64_heads, # 6
                 window_size=window_size
             )
-            self.advanced_fusion_64b = DMVRTAdvancedFusion(
+            self.advanced_fusion_64b = AdaptiveFusion(
                 mamba_dim=num_features,  # 256
                 vrt_dim=vrt_dim,         # 96
                 use_flow_mask=use_flow_mask,
@@ -468,7 +613,7 @@ class DMVRTNetFixed128(BaseModule):
         self._fix_ddp_checkpoint_issue()
 
     def _init_aimvr_components(self, feat_pretrained):
-        """Fully reuse all AIM-VR components - identical to dmvrt_net_fixed.py"""
+        """Fully reuse all AIM-VR components"""
         from ..aimvsr.modules.convnext import ConvNeXt
         from ..aimvsr.modules.head import ProjectionHead
         from ..aimvsr.modules.mambablock import MambaLayerglobal, MambaLayerlocal
@@ -480,6 +625,14 @@ class DMVRTNetFixed128(BaseModule):
             # Channel alignment after residual concat - unified 2.5D convolution fusion
             self.conv_fre2_res = nn.Conv3d(self.num_features*2, self.num_features,
                                          kernel_size=(1, 3, 3), padding=(0, 1, 1))
+            # VRT smart fusion: upgraded to Mlp_GEGLU gating mechanism
+            # self.fre_mlp_geglu = Mlp_GEGLU(
+            #     in_features=self.num_features*2,    # 512 (256+256)
+            #     hidden_features=self.num_features*2, # 512
+            #     out_features=self.num_features,      # 256
+            #     act_layer=nn.GELU,
+            #     drop=0.1
+            # )
 
         # Determine stem_patch_size based on whether super-resolution is used
         stem_patch_size = 1 if self.scale_factor > 1 else 4
@@ -510,7 +663,7 @@ class DMVRTNetFixed128(BaseModule):
             nn.Conv2d(self.num_features, self.num_features, kernel_size=1)
         )
 
-        # Mamba modules - high-resolution path (32x32 for 128-patch)
+        # Mamba modules - high-resolution path (64x64)
         self.GlobalMambaBlock1 = MambaLayerglobal(dim=self.num_features)
         self.LocalMambaBlock1 = MambaLayerlocal(dim=self.num_features)
         self.GlobalMambaBlock2 = MambaLayerglobal(dim=self.num_features)
@@ -522,7 +675,7 @@ class DMVRTNetFixed128(BaseModule):
             kernel_size=(3, 3, 3), stride=(1, 2, 2), padding=(1, 1, 1)
         )
 
-        # Mamba modules - low-resolution path (16x16 for 128-patch)
+        # Mamba modules - low-resolution path (32x32)
         self.GlobalMambaBlockLowRes1 = MambaLayerglobal(dim=self.num_features * 2)
         self.LocalMambaBlockLowRes1 = MambaLayerlocal(dim=self.num_features * 2)
         self.GlobalMambaBlockLowRes2 = MambaLayerglobal(dim=self.num_features * 2)
@@ -530,7 +683,7 @@ class DMVRTNetFixed128(BaseModule):
         self.GlobalMambaBlockLowRes3 = MambaLayerglobal(dim=self.num_features * 2)
         self.LocalMambaBlockLowRes3 = MambaLayerlocal(dim=self.num_features * 2)
 
-        # Upsampling back to 32x32 (for 128-patch)
+        # Upsampling back to 64x64
         self.upconv2 = nn.ConvTranspose3d(
             self.num_features*2, self.num_features,
             kernel_size=(3, 3, 3), stride=(1, 2, 2), padding=(1, 1, 1),
@@ -562,11 +715,20 @@ class DMVRTNetFixed128(BaseModule):
         )
 
     def forward(self, lqs, hilbert_curve_large_scale, hilbert_curve_small_scale):
-        """Forward pass - fully reuses logic from dmvrt_net_fixed.py, only adjusts optical flow method name"""
+        """Forward pass - complete dimension reduction - VRT enhancement - advanced fusion architecture
+
+        Args:
+            lqs (Tensor): Input low-quality sequence [B, T, C, H, W]
+            hilbert_curve_large_scale (Tensor): Large-scale Hilbert curve
+            hilbert_curve_small_scale (Tensor): Small-scale Hilbert curve
+
+        Returns:
+            Tensor: Output high-quality sequence [B, T, C, H*scale, W*scale]
+        """
         b, t, c, h, w = lqs.size()
 
         # ====== Step 0: Compute all optical flows at once ======
-        # Fix method name: call 128-patch-specific optical flow computation method
+        # Avoid pa_frames<=0 case: if optical flow unavailable, disable all VRT TRSA
         all_flows = self._get_flows_all_scales(lqs)
         if all_flows is None and self.pa_frames <= 0:
             # Force disable all VRT TRSA switches
@@ -579,7 +741,7 @@ class DMVRTNetFixed128(BaseModule):
             use_trsa64b = self.trsa64b
 
         # ====== Step 1: AIM-VR feature extraction ======
-        lqs_reshaped = lqs.reshape(-1, c, h, w)
+        lqs_reshaped = lqs.reshape(-1, c, h, w)  # Fix memory layout issue for batch_size>1
         feats = self.feat_extract(lqs_reshaped)
 
         # ProjectionHead processing
@@ -594,33 +756,33 @@ class DMVRTNetFixed128(BaseModule):
 
         # Reshape to temporal features
         _, c, feat_h, feat_w = f.shape
-        x_new = f.reshape(b, t, self.num_features, feat_h, feat_w)
+        x_new = f.reshape(b, t, self.num_features, feat_h, feat_w)  # Fix memory layout issue for batch_size>1
 
-        # ====== Step 2: Mamba M1 + DMVRTFlowFusion64A ======
+        # ====== Step 2: Mamba M1 + FlowGuidedFusion64A ======
         M1 = self.GlobalMambaBlock1(x_new)
         M1 = self.LocalMambaBlock1(M1, hilbert_curve_large_scale)
         M1 = self.GlobalMambaBlock2(M1)
         M1 = self.LocalMambaBlock2(M1, hilbert_curve_large_scale)
 
-        # DMVRTFlowFusion64A enhancement (optional)
+        # FlowGuidedFusion64A enhancement (optional)
         if use_trsa64a:
             # Fix: safely extract optical flow to avoid KeyError
-            flows_32 = None  # For 128-patch, the "64 position" is actually a 32x32 feature map
-            if all_flows and 'flows_32' in all_flows:
-                flows_32 = all_flows['flows_32']
-            # If no valid optical flow, pass None tuple
-            if flows_32:
-                flows_tuple_64a = flows_32
+            flows_64 = None
+            if all_flows and 'flows_64' in all_flows:
+                flows_64 = all_flows['flows_64']
+            # If no valid optical flow, pass None tuple and print notification
+            if flows_64:
+                flows_tuple_64a = flows_64
             else:
-                print("No valid flows_32 detected, flows_tuple_64a will pass (None, None)")
+                print("No valid flows_64 detected, flows_tuple_64a will pass (None, None)")
                 flows_tuple_64a = (None, None)
-            M1 = self._apply_dmvrt_fusion(
+            M1 = self._apply_flow_fusion(
                 M1, flows_tuple_64a,
                 flow_fusion=self.dmvrt_fusion_64a,
                 advanced_fusion=self.advanced_fusion_64a
             )
 
-        # ====== Step 3: Downsampling + Mamba M2 + DMVRTFlowFusion32 ======
+        # ====== Step 3: Downsampling + Mamba M2 + FlowGuidedFusion32 ======
         x_down = rearrange(M1, 'n d c h w -> n c d h w')
         x_down = F.relu(self.conv1(x_down))
         x_down = rearrange(x_down, 'n c d h w -> n d c h w')
@@ -632,20 +794,20 @@ class DMVRTNetFixed128(BaseModule):
         M2 = self.GlobalMambaBlockLowRes3(M2)
         M2 = self.LocalMambaBlockLowRes3(M2, hilbert_curve_small_scale)
 
-        # DMVRTFlowFusion32 enhancement (placed after M2 output, before Fre)
+        # FlowGuidedFusion32 enhancement (placed after M2 output, before Fre)
         if use_trsa32:
             # Fix: safely extract optical flow to avoid KeyError
-            flows_16 = None  # For 128-patch, the "32 position" is actually a 16x16 feature map
-            if all_flows and 'flows_16' in all_flows:
-                flows_16 = all_flows['flows_16']
-            # If no valid optical flow, pass None tuple
-            if flows_16:
-                flows_tuple_32 = flows_16
+            flows_32 = None
+            if all_flows and 'flows_32' in all_flows:
+                flows_32 = all_flows['flows_32']
+            # If no valid optical flow, pass None tuple and print notification
+            if flows_32:
+                flows_tuple_32 = flows_32
             else:
-                print("No valid flows_16 detected, flows_tuple_32 will pass (None, None)")
+                print("No valid flows_32 detected, flows_tuple_32 will pass (None, None)")
                 flows_tuple_32 = (None, None)
 
-            M2 = self._apply_dmvrt_fusion(
+            M2 = self._apply_flow_fusion(
                 M2, flows_tuple_32,
                 flow_fusion=self.dmvrt_fusion_32,
                 advanced_fusion=self.advanced_fusion_32
@@ -657,7 +819,7 @@ class DMVRTNetFixed128(BaseModule):
             M2 = self.fre2(lqs_reshaped, M2)
             M2 = rearrange(M2, '(b t) c h w -> b t c h w', b=b)
 
-        # ====== Step 4: Upsampling + Mamba M3 + DMVRTFlowFusion64B ======
+        # ====== Step 4: Upsampling + Mamba M3 + FlowGuidedFusion64B ======
         x_up = rearrange(M2, 'n d c h w -> n c d h w')
         x_up = F.relu(self.upconv2(x_up))
         if self.fre_decoder:
@@ -671,20 +833,20 @@ class DMVRTNetFixed128(BaseModule):
         M3 = self.GlobalMambaBlock4(M3)
         M3 = self.LocalMambaBlock4(M3, hilbert_curve_large_scale)
 
-        # DMVRTFlowFusion64B enhancement (optional)
+        # FlowGuidedFusion64B enhancement (optional)
         if use_trsa64b:
             # Fix: safely extract optical flow to avoid KeyError
-            flows_32 = None
-            if all_flows and 'flows_32' in all_flows:
-                flows_32 = all_flows['flows_32']
-            # If no valid optical flow, pass None tuple
-            if flows_32:
-                flows_tuple_64b = flows_32
+            flows_64 = None
+            if all_flows and 'flows_64' in all_flows:
+                flows_64 = all_flows['flows_64']
+            # If no valid optical flow, pass None tuple and print notification
+            if flows_64:
+                flows_tuple_64b = flows_64
             else:
-                print("No valid flows_32 detected, flows_tuple_64b will pass (None, None)")
+                print("No valid flows_64 detected, flows_tuple_64b will pass (None, None)")
                 flows_tuple_64b = (None, None)
 
-            M3 = self._apply_dmvrt_fusion(
+            M3 = self._apply_flow_fusion(
                 M3, flows_tuple_64b,
                 flow_fusion=self.dmvrt_fusion_64b,
                 advanced_fusion=self.advanced_fusion_64b
@@ -700,13 +862,23 @@ class DMVRTNetFixed128(BaseModule):
 
         return final
 
-    def _apply_dmvrt_fusion(self, mamba_features, flows_tuple, flow_fusion, advanced_fusion):
-        """Apply DMVRTFlowFusion module - fully reuses logic from dmvrt_net_fixed.py"""
-        # Switch check: return original features directly when pa_frames<=0
+    def _apply_flow_fusion(self, mamba_features, flows_tuple, flow_fusion, advanced_fusion):
+        """Apply FlowGuidedFusion module - use precomputed optical flow data
+
+        Args:
+            mamba_features: Mamba output features [B, T, C, H, W]
+            flows_tuple: (flows_backward, flows_forward) or (None, None)
+            flow_fusion: FlowGuidedFusion module
+            advanced_fusion: AdaptiveFusion module
+
+        Returns:
+            fused_features: Final fused features
+        """
+        # Switch check: return original features directly when pa_frames<=0 (flow fusion fully degraded)
         if self.pa_frames <= 0:
             return mamba_features
 
-        # Check if flows_tuple is valid
+        # Fix: check if flows_tuple is valid, consistent fallback mechanism with original flame_net.py
         if flows_tuple is None or flows_tuple == (None, None):
             print(f"Invalid optical flow, skipping VRT processing")
             return mamba_features
@@ -715,12 +887,14 @@ class DMVRTNetFixed128(BaseModule):
             # Use precomputed optical flow
             flows_backward, flows_forward = flows_tuple
 
-            # Further check if optical flow is None
+            # Fix: further check if optical flow is None, use fallback mechanism
             if flows_backward is None or flows_forward is None:
                 print(f"Optical flow data is None, skipping VRT processing")
                 return mamba_features
 
-            # Step 1: DMVRTFlowFusion smart processing
+            # print(f"Optical flow data valid: backward={flows_backward.shape}, forward={flows_forward.shape}")
+
+            # Step 1: FlowGuidedFusion smart processing
             vrt_features = flow_fusion(mamba_features, flows_backward, flows_forward)
 
             # Step 2: Compute flow_mask (optimized for weather degradation and occlusion)
@@ -729,22 +903,33 @@ class DMVRTNetFixed128(BaseModule):
             else:
                 flow_mask = None
 
-            # Step 3: DMVRTAdvancedFusion - unified 2.5D convolution fusion
+            # Step 3: AdaptiveFusion - unified 2.5D convolution fusion (final fusion)
             fused_features = advanced_fusion(mamba_features, vrt_features, flow_mask)
 
         except Exception as e:
-            print(f"VRT Stage processing failed: {e}, using original features")
+            print(f"VRT Stage with flow processing failed: {e}, switching to no-flow mode")
             fused_features = mamba_features
 
         return fused_features
 
     def _get_flows_all_scales(self, x):
-        """128-patch-specific optical flow computation - fix size mismatch issue
+        """Optimized optical flow computation - based on downsampled input to reduce computation
 
-        Key fix: ensure optical flow sizes match feature map sizes
-        - Input 128x128 -> ConvNeXt features 32x32 -> need 32x32 optical flow
-        - After conv1 downsampling 16x16 -> need 16x16 optical flow
-        - SpyNet output needs downsampling to corresponding sizes
+        New strategy: first downsample input to 1/4, then compute optical flow, take Level 0 and 1:
+        - Input downsample: 256x256 -> 64x64
+        - Level 0: 64x64  <- used for 64x64 feature map
+        - Level 1: 32x32  <- used for 32x32 feature map
+        - Level 2: 16x16  (backup)
+        - Level 3: 8x8    (backup)
+
+        Args:
+            x: Input image [B, T, 3, H, W] (original size, e.g. 256x256)
+
+        Returns:
+            dict: {
+                'flows_64': (flows_backward_64, flows_forward_64),  # Level 0
+                'flows_32': (flows_backward_32, flows_forward_32)   # Level 1
+            } or None if SpyNet unavailable
         """
         b, t, c, h, w = x.size()
 
@@ -753,92 +938,107 @@ class DMVRTNetFixed128(BaseModule):
             return None
 
         try:
-            # 128-patch strategy: downsample to 64x64 for SpyNet computation
-            spynet_input_size = 64  # SpyNet input size
+            # New strategy: downsample to 1/4 first, then compute optical flow to reduce SpyNet computation
+            # Original 256x256 -> 64x64, so SpyNet Level 0 is our needed 64x64 scale
+            target_size = (h // 4, w // 4)  # 64x64
 
+            # Debug info: show optical flow computation optimization
             if torch.rand(1) < 0.01:  # 1% probability to print
-                print(f"128-patch optical flow computation: input {h}x{w} -> SpyNet {spynet_input_size}x{spynet_input_size}")
-                print(f"   Target flows: 32x32 feature map, 16x16 feature map")
+                print(f"Optical flow computation optimization: input {h}x{w} -> downsampled {target_size[0]}x{target_size[1]} -> using Level 0&1")
 
-            # 3D downsampling to SpyNet input size
+            # Use torch.nn.functional.interpolate trilinear mode for 3D downsampling (spatiotemporal trilinear interpolation)
+            # Input [B, T, 3, H, W] -> [B, 3, T, H, W] for 3D interpolation
             x_3d = x.permute(0, 2, 1, 3, 4)  # [B, 3, T, H, W]
+            # Target size: (T, H//4, W//4)
             x_downsampled_3d = F.interpolate(
                 x_3d,
-                size=(t, spynet_input_size, spynet_input_size),
+                size=(t, target_size[0], target_size[1]),
                 mode='trilinear',
                 align_corners=False
-            )  # [B, 3, T, 64, 64]
-            x_downsampled = x_downsampled_3d.permute(0, 2, 1, 3, 4).contiguous()  # [B, T, 3, 64, 64]
+            )  # [B, 3, T, H//4, W//4]
+            # Convert back to [B, T, 3, H//4, W//4]
+            x_downsampled = x_downsampled_3d.permute(0, 2, 1, 3, 4).contiguous()
 
-            # SpyNet computation
-            x_1 = x_downsampled[:, :-1, :, :, :].reshape(-1, c, spynet_input_size, spynet_input_size)
-            x_2 = x_downsampled[:, 1:, :, :, :].reshape(-1, c, spynet_input_size, spynet_input_size)
+            # Compute optical flow using downsampled images
+            x_1 = x_downsampled[:, :-1, :, :, :].reshape(-1, c, target_size[0], target_size[1])  # [B*(T-1), 3, 64, 64]
+            x_2 = x_downsampled[:, 1:, :, :, :].reshape(-1, c, target_size[0], target_size[1])   # [B*(T-1), 3, 64, 64]
 
-            flows_backward_raw = self.spynet(x_1, x_2)
-            flows_forward_raw = self.spynet(x_2, x_1)
+            # SpyNet computes all scales at once (now based on 64x64 input)
+            flows_backward_raw = self.spynet(x_1, x_2)  # List[Tensor], 4 scales
+            flows_forward_raw = self.spynet(x_2, x_1)   # List[Tensor], 4 scales
 
             # Validate SpyNet return values
             if (flows_backward_raw is None or flows_forward_raw is None or
                 not isinstance(flows_backward_raw, list) or not isinstance(flows_forward_raw, list) or
                 len(flows_backward_raw) < 4 or len(flows_forward_raw) < 4):
-                print(f"SpyNet returned invalid values")
+                print(f"SpyNet returned invalid values, backward_len={len(flows_backward_raw) if isinstance(flows_backward_raw, list) else 'None'}, "
+                      f"forward_len={len(flows_forward_raw) if isinstance(flows_forward_raw, list) else 'None'}")
                 return None
 
-            # Key fix: downsample SpyNet optical flow to target feature map sizes
+            # Fix: safely access SpyNet returned optical flow with shape validation
             try:
-                # SpyNet Level 0: 64x64 -> downsample to 32x32 (corresponds to 128-patch 32x32 feature map)
-                flows_backward_64 = flows_backward_raw[0].reshape(b, t-1, 2, 64, 64)  # [B, T-1, 2, 64, 64]
-                flows_forward_64 = flows_forward_raw[0].reshape(b, t-1, 2, 64, 64)
+                # Validate optical flow at each level
+                for i in range(4):
+                    if flows_backward_raw[i] is None or flows_forward_raw[i] is None:
+                        print(f"SpyNet Level {i} optical flow is None")
+                        return None
+                    # Validate dimensions
+                    if flows_backward_raw[i].dim() != 4 or flows_forward_raw[i].dim() != 4:
+                        print(f"SpyNet Level {i} dimension error: backward={flows_backward_raw[i].shape}, forward={flows_forward_raw[i].shape}")
+                        return None
 
-                # Downsample to 32x32
-                flows_backward_64_3d = rearrange(flows_backward_64, 'b t c h w -> (b t) c h w')
-                flows_forward_64_3d = rearrange(flows_forward_64, 'b t c h w -> (b t) c h w')
+                # VRT standard processing: reshape to multi-scale format
+                flows_backward_formatted = []
+                flows_forward_formatted = []
 
-                fb_32 = F.interpolate(flows_backward_64_3d, size=(32, 32), mode='bilinear', align_corners=False)
-                ff_32 = F.interpolate(flows_forward_64_3d, size=(32, 32), mode='bilinear', align_corners=False)
+                for i in range(4):
+                    # Compute expected size - new strategy: based on 64x64 downsampled image
+                    expected_h, expected_w = target_size[0] // (2 ** i), target_size[1] // (2 ** i)
 
-                fb_32 = rearrange(fb_32, '(b t) c h w -> b t c h w', b=b)  # [B, T-1, 2, 32, 32]
-                ff_32 = rearrange(ff_32, '(b t) c h w -> b t c h w', b=b)  # [B, T-1, 2, 32, 32]
+                    # Get actual shape
+                    actual_backward = flows_backward_raw[i]
+                    actual_forward = flows_forward_raw[i]
 
-                # SpyNet Level 1: 32x32 -> downsample to 16x16 (corresponds to 128-patch 16x16 feature map)
-                flows_backward_32 = flows_backward_raw[1].reshape(b, t-1, 2, 32, 32)  # [B, T-1, 2, 32, 32]
-                flows_forward_32 = flows_forward_raw[1].reshape(b, t-1, 2, 32, 32)
+                    # Validate actual shape matches expected
+                    if (actual_backward.shape[-2] != expected_h or actual_backward.shape[-1] != expected_w or
+                        actual_forward.shape[-2] != expected_h or actual_forward.shape[-1] != expected_w):
+                        print(f"SpyNet Level {i} size mismatch: expected=({expected_h}x{expected_w}), "
+                              f"got=({actual_backward.shape[-2]}x{actual_backward.shape[-1]})")
+                        return None
 
-                # Downsample to 16x16
-                flows_backward_32_3d = rearrange(flows_backward_32, 'b t c h w -> (b t) c h w')
-                flows_forward_32_3d = rearrange(flows_forward_32, 'b t c h w -> (b t) c h w')
+                    # Reshape to standard format [B, T-1, 2, H, W]
+                    fb = actual_backward.reshape(b, t-1, 2, expected_h, expected_w)  # Fix memory layout issue for batch_size>1
+                    ff = actual_forward.reshape(b, t-1, 2, expected_h, expected_w)   # Fix memory layout issue for batch_size>1
 
-                fb_16 = F.interpolate(flows_backward_32_3d, size=(16, 16), mode='bilinear', align_corners=False)
-                ff_16 = F.interpolate(flows_forward_32_3d, size=(16, 16), mode='bilinear', align_corners=False)
+                    flows_backward_formatted.append(fb)
+                    flows_forward_formatted.append(ff)
 
-                fb_16 = rearrange(fb_16, '(b t) c h w -> b t c h w', b=b)  # [B, T-1, 2, 16, 16]
-                ff_16 = rearrange(ff_16, '(b t) c h w -> b t c h w', b=b)  # [B, T-1, 2, 16, 16]
-
-                if torch.rand(1) < 0.01:  # 1% probability to print confirmation
-                    print(f"Optical flow size fix: flows_32={fb_32.shape}, flows_16={fb_16.shape}")
+                # New strategy: extract optical flow for 64x64 and 32x32 (now Level 0 and 1)
+                flows_backward_64, flows_forward_64 = flows_backward_formatted[0], flows_forward_formatted[0]  # Level 0: 64x64
+                flows_backward_32, flows_forward_32 = flows_backward_formatted[1], flows_forward_formatted[1]  # Level 1: 32x32
 
                 return {
-                    'flows_32': (fb_32, ff_32),  # True 32x32 optical flow, corresponds to 32x32 feature map
-                    'flows_16': (fb_16, ff_16)   # True 16x16 optical flow, corresponds to 16x16 feature map
+                    'flows_64': (flows_backward_64, flows_forward_64),
+                    'flows_32': (flows_backward_32, flows_forward_32)
                 }
 
             except (IndexError, ValueError) as e:
-                print(f"128-patch optical flow formatting failed: {e}")
+                print(f"SpyNet optical flow formatting failed: {e}")
                 return None
 
         except Exception as e:
-            print(f"128-patch SpyNet computation failed: {e}")
+            print(f"SpyNet computation failed: {e}, skipping optical flow fusion")
             return None
 
     def _aimvr_reconstruction(self, x):
-        """AIM-VR reconstructor - fully reuses logic from dmvrt_net_fixed.py"""
-        # First upsampling: double feature map spatial size + channel reduction
+        """AIM-VR reconstructor (fully reused from original)"""
+        # First upsampling: 64->128 (spatial) + channel reduction
         x = self.conv_before_upsample1(x)  # [B, 128, T, H, W]
         x = rearrange(x, 'n c d h w -> n d c h w')
         x = self.upsample1(x)  # [B, 32, T, H*2, W*2] (128/4=32)
         x = rearrange(x, 'n d c h w -> n c d h w')
 
-        # Second upsampling: double feature map spatial size + channel processing
+        # Second upsampling: 128->256 (spatial) + channel processing
         x = self.conv_before_upsample2(x)  # [B, 64, T, H*2, W*2]
         x = rearrange(x, 'n c d h w -> n d c h w')
         x = self.upsample2(x)  # [B, 16, T, H*4, W*4] (64/4=16)
@@ -847,7 +1047,7 @@ class DMVRTNetFixed128(BaseModule):
         return x
 
     def init_weights(self, pretrained=None, strict=False):
-        """Initialize weights - fully reuses logic from dmvrt_net_fixed.py"""
+        """Initialize weights"""
         if isinstance(pretrained, str):
             logger = MMLogger.get_current_instance()
             logger.info(f'Load model from: {pretrained}')
@@ -857,7 +1057,7 @@ class DMVRTNetFixed128(BaseModule):
                 self.feat_extract.init_weights()
 
     def _fix_ddp_checkpoint_issue(self):
-        """Fix parameter duplicate marking issue in DDP training - fully reuses logic from dmvrt_net_fixed.py"""
+        """Fix parameter duplicate marking issue in DDP training"""
         print("Applying DDP fix: disabling all VRT checkpoint functionality...")
 
         checkpoint_disabled_count = 0

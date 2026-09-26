@@ -1,8 +1,8 @@
-# DMVRTNetFixed160 RainSynAll100Haze full-test configuration
+# FlameNet160 RainSynAll100Haze full-test configuration
 #
 # Test config for the released 256-channel / 160-patch FLAME model
-# (AimVRTDynamic + DMVRTNetFixed160). Model parameters follow the main
-# training config dmvrt-fixed-64a32_f256v48g8dp2-p160_lr1e-4_RainSynAll100Haze_20250924.py
+# (FlameDynamic + FlameNet160). Model parameters follow the main
+# training config flame_rainsynall100haze.py
 # and the mmengine backup config recorded in the training work_dir
 # (work_dirs/...RainSynAll100Haze_20250922/20250924_104310/vis_data/config.py),
 # which is also the setup that produced the reported validation PSNR/SSIM.
@@ -15,7 +15,7 @@
 default_scope = 'mmagic'
 
 # test configuration naming
-experiment_name = 'dmvrt-fixed-64a32_f256_RainSynAll100Haze_Test'
+experiment_name = 'flame_rainsynall100haze_test'
 work_dir = f'./work_dirs/test/{experiment_name}'
 save_dir = './work_dirs/test'
 
@@ -30,11 +30,11 @@ scale = 1
 load_from = None
 resume = False
 
-# model settings - 256-channel / 160-patch version (AimVRTDynamic wrapper)
+# model settings - 256-channel / 160-patch version (FlameDynamic wrapper)
 model = dict(
-    type='AimVRTDynamic',
+    type='FlameDynamic',
     generator=dict(
-        type='DMVRTNetFixed160',  # dedicated version for 160x160 patches
+        type='FlameNet160',  # dedicated version for 160x160 patches
         num_features=256,         # 256-channel version
         vrt_dim=48,
         scale_factor=scale,
@@ -44,7 +44,7 @@ model = dict(
         feat_pretrained='https://download.openmmlab.com/mmclassification/v0/convnext/downstream/convnext-tiny_3rdparty_32xb128-noema_in1k_20220301-795e9634.pth',
         spynet_path='https://github.com/JingyunLiang/VRT/releases/download/v0.0/spynet_sintel_final-3d2a1287.pth',
 
-        # DMVRTFixed-specific configuration
+        # FLAME-specific configuration
         use_flow_mask=True,
         flow_mask_strength=0.5,
 
@@ -212,16 +212,16 @@ Key points:
 3. 7 frames are loaded per test video; the model runs on overlapping
    6-frame clips (tile=[6, 160, 160], tile_overlap=[5, 120, 120]), exactly
    as in the training-time validation that produced the reported metrics.
-4. AimVRTDynamic + DMVRTNetFixed160, num_features=256, vrt_dim=48,
+4. FlameDynamic + FlameNet160, num_features=256, vrt_dim=48,
    img_size=[6, 40, 40].
 5. data_prefix img='Rain_Haze', gt='GT'.
 
 Run commands:
 # Single-GPU test (best-PSNR checkpoint)
-python tools/test.py configs/aimvrtRain/test/dmvrt-fixed-64a32_f256_RainSynAll100Haze_Test.py checkpoints/flame_rainsynall100haze_psnr.pth
+python tools/test.py configs/flame/test/flame_rainsynall100haze_test.py checkpoints/flame_rainsynall100haze_psnr.pth
 
 # Single-GPU test (best-SSIM checkpoint)
-python tools/test.py configs/aimvrtRain/test/dmvrt-fixed-64a32_f256_RainSynAll100Haze_Test.py checkpoints/flame_rainsynall100haze_ssim.pth
+python tools/test.py configs/flame/test/flame_rainsynall100haze_test.py checkpoints/flame_rainsynall100haze_ssim.pth
 
 Dataset structure:
 data/RainSynAll100/Video_rain_synthesis_test/

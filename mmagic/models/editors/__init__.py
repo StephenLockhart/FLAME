@@ -69,8 +69,9 @@ from .ttsr import LTE, TTSR, SearchTransformer, TTSRDiscriminator, TTSRNet
 from .vico import ViCo
 from .wgan_gp import WGANGP
 from .aimvsr import AimVSR, AimNet, AimVR, AimVRNet, A2LAimNet
-from .aimvrt import (AimVRT, AimVRTDynamic, DMVRTNetFixed, DMVRTNetFixed128,
-                     DMVRTNetFixed160)
+from .flame import (Flame, FlameDynamic, FlameNet, FlameNet128, FlameNet160,
+                    AimVRT, AimVRTDynamic, DMVRTNetFixed, DMVRTNetFixed128,
+                    DMVRTNetFixed160)
 
 __all__ = [
     'AOTEncoderDecoder', 'AOTBlockNeck', 'AOTInpaintor',
@@ -103,6 +104,8 @@ __all__ = [
     'StableDiffusionInpaint', 'FastComposer', 'AnimateDiff',
     'UNet3DConditionMotionModel', 'StableDiffusionXL', 'BasicVSRx2',
     'AimNet', 'AimVSR', 'AimVR', 'AimVRNet', 'A2LAimNet',
+    'Flame', 'FlameDynamic', 'FlameNet', 'FlameNet128', 'FlameNet160',
+    # legacy aliases for checkpoint compatibility
     'AimVRT', 'AimVRTDynamic', 'DMVRTNetFixed', 'DMVRTNetFixed128',
     'DMVRTNetFixed160'
 ]
