@@ -155,12 +155,11 @@ Training/testing configs: `configs/aimvrtRain/`.
 If you find this work useful, please cite:
 
 ```bibtex
-@article{flame2026,
-  title   = {FLAME: Flow Guidance and Adaptive Frequency Fusion for All-in-One Mamba-Enhanced Video Restoration},
-  author  = {Lu, Zhizhou and Liu, Tianrui and Huang, Jun-Jie and Zhao, Wentao and Liu, Xinwang and Luo, Wenhan and Wang, Meng},
-  journal = {IEEE Transactions on Image Processing},
-  year    = {2026},
-  note    = {under review}
+@misc{flame2026,
+  title  = {FLAME: Flow Guidance and Adaptive Frequency Fusion for All-in-One Mamba-Enhanced Video Restoration},
+  author = {Lu, Zhizhou and Liu, Tianrui and Huang, Jun-Jie and Zhao, Wentao and Liu, Xinwang and Luo, Wenhan and Wang, Meng},
+  year   = {2026},
+  note   = {Manuscript under review at IEEE Transactions on Image Processing}
 }
 
 @inproceedings{aimvr,
